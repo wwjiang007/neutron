@@ -24,9 +24,6 @@ from neutron.tests import base
 
 class TestOVSNativeConnection(base.BaseTestCase):
 
-    def setUp(self):
-        super(TestOVSNativeConnection, self).setUp()
-
     @mock.patch.object(connection, 'TransactionQueue')
     @mock.patch.object(idlutils, 'get_schema_helper')
     @mock.patch.object(idl, 'Idl')
@@ -86,8 +83,8 @@ class TestOVSNativeConnection(base.BaseTestCase):
     @mock.patch.object(connection, 'threading')
     @mock.patch.object(connection.idlutils, 'wait_for_change')
     @mock.patch.object(connection, 'idl')
-    @mock.patch.object(connection.helpers, 'enable_connection_uri')
-    @mock.patch.object(connection.idlutils, 'get_schema_helper')
+    @mock.patch.object(idlutils.helpers, 'enable_connection_uri')
+    @mock.patch.object(connection.idlutils, '_get_schema_helper')
     def test_do_get_schema_helper_retry(self, mock_get_schema_helper,
                                         mock_enable_conn,
                                         mock_idl,

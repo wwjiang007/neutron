@@ -12,6 +12,7 @@
 
 import mock
 
+from neutron_lib import context as n_context
 from neutron_lib.db import model_base
 from neutron_lib import exceptions as n_exc
 from oslo_versionedobjects import base as obj_base
@@ -19,7 +20,6 @@ from oslo_versionedobjects import fields as obj_fields
 import sqlalchemy as sa
 
 from neutron.callbacks import events
-from neutron import context as n_context
 from neutron.db import rbac_db_models
 from neutron.extensions import rbac as ext_rbac
 from neutron.objects import common_types
@@ -280,6 +280,10 @@ class RbacNeutronDbObjectTestCase(test_base.BaseObjectIfaceTestCase,
 
         attach_rbac_mock.assert_called_with(
             obj_id, test_neutron_obj.obj_context.tenant_id)
+
+    def test_shared_field_false_without_context(self):
+        test_neutron_obj = self._test_class()
+        self.assertFalse(test_neutron_obj.to_dict()['shared'])
 
     @mock.patch.object(_test_class, 'attach_rbac')
     @mock.patch.object(obj_db_api, 'get_object',

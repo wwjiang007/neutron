@@ -15,13 +15,13 @@
 
 import sys
 
+from neutron_lib import context
 from neutron_lib import exceptions as exc
 from oslo_config import cfg
 from oslo_log import log
 from six import moves
 
 from neutron._i18n import _, _LE, _LI, _LW
-from neutron.common import _deprecate
 from neutron.conf.plugins.ml2.drivers import driver_type
 from neutron.db import api as db_api
 from neutron.db.models.plugins.ml2 import vlanallocation as vlan_alloc_model
@@ -31,8 +31,6 @@ from neutron.plugins.ml2 import driver_api as api
 from neutron.plugins.ml2.drivers import helpers
 
 LOG = log.getLogger(__name__)
-
-_deprecate._moved_global('VlanAllocation', new_module=vlan_alloc_model)
 
 driver_type.register_ml2_drivers_vlan_opts()
 
@@ -64,12 +62,11 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
 
     @db_api.retry_db_errors
     def _sync_vlan_allocations(self):
-        session = db_api.get_session()
-        with session.begin(subtransactions=True):
+        ctx = context.get_admin_context()
+        with db_api.context_manager.writer.using(ctx):
             # get existing allocations for all physical networks
             allocations = dict()
-            allocs = (session.query(vlan_alloc_model.VlanAllocation).
-                      with_lockmode('update'))
+            allocs = ctx.session.query(vlan_alloc_model.VlanAllocation)
             for alloc in allocs:
                 if alloc.physical_network not in allocations:
                     allocations[alloc.physical_network] = set()
@@ -101,7 +98,19 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
                                           {'vlan_id': alloc.vlan_id,
                                            'physical_network':
                                            physical_network})
-                                session.delete(alloc)
+                                # This UPDATE WHERE statement blocks anyone
+                                # from concurrently changing the allocation
+                                # values to True while our transaction is
+                                # open so we don't accidentally delete
+                                # allocated segments. If someone has already
+                                # allocated, count will return 0 so we don't
+                                # delete.
+                                count = allocs.filter_by(
+                                    allocated=False, vlan_id=alloc.vlan_id,
+                                    physical_network=physical_network
+                                ).update({"allocated": False})
+                                if count:
+                                    ctx.session.delete(alloc)
                     del allocations[physical_network]
 
                 # add missing allocatable vlans to table
@@ -110,7 +119,7 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
                                            physical_network=physical_network,
                                            vlan_id=vlan_id,
                                            allocated=False)
-                    session.add(alloc)
+                    ctx.session.add(alloc)
 
             # remove from table unallocated vlans for any unconfigured
             # physical networks
@@ -122,7 +131,7 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
                                   {'vlan_id': alloc.vlan_id,
                                    'physical_network':
                                    alloc.physical_network})
-                        session.delete(alloc)
+                        ctx.session.delete(alloc)
 
     def get_type(self):
         return p_const.TYPE_VLAN
@@ -140,7 +149,7 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
         if physical_network:
             if physical_network not in self.network_vlan_ranges:
                 msg = (_("physical_network '%s' unknown "
-                         " for VLAN provider network") % physical_network)
+                         "for VLAN provider network") % physical_network)
                 raise exc.InvalidInput(error_message=msg)
             if segmentation_id:
                 if not plugin_utils.is_valid_vlan_tag(segmentation_id):
@@ -235,6 +244,3 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
         if physical_network in self.physnet_mtus:
             mtu.append(int(self.physnet_mtus[physical_network]))
         return min(mtu) if mtu else 0
-
-
-_deprecate._MovedGlobals()

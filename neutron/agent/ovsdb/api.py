@@ -14,6 +14,7 @@
 
 import abc
 import collections
+import contextlib
 import uuid
 
 from oslo_config import cfg
@@ -34,8 +35,11 @@ OPTS = [
                help=_('The interface for interacting with the OVSDB')),
     cfg.StrOpt('ovsdb_connection',
                default='tcp:127.0.0.1:6640',
-               help=_('The connection string for the native OVSDB backend. '
-                      'Requires the native ovsdb_interface to be enabled.'))
+               help=_('The connection string for the OVSDB backend. '
+                      'Will be used by ovsdb-client when monitoring and '
+                      'used for the all ovsdb commands when native '
+                      'ovsdb_interface is enabled'
+                      ))
 ]
 cfg.CONF.register_opts(OPTS, 'OVS')
 
@@ -80,6 +84,7 @@ class Transaction(object):
 class API(object):
     def __init__(self, context):
         self.context = context
+        self._nested_txn = None
 
     @staticmethod
     def get(context, iface_name=None):
@@ -89,7 +94,7 @@ class API(object):
         return iface(context)
 
     @abc.abstractmethod
-    def transaction(self, check_error=False, log_errors=True, **kwargs):
+    def create_transaction(self, check_error=False, log_errors=True, **kwargs):
         """Create a transaction
 
         :param check_error: Allow the transaction to raise an exception?
@@ -99,6 +104,28 @@ class API(object):
         :returns: A new transaction
         :rtype: :class:`Transaction`
         """
+
+    @contextlib.contextmanager
+    def transaction(self, check_error=False, log_errors=True, **kwargs):
+        """Create a transaction context.
+
+        :param check_error: Allow the transaction to raise an exception?
+        :type check_error:  bool
+        :param log_errors:  Log an error if the transaction fails?
+        :type log_errors:   bool
+        :returns: Either a new transaction or an existing one.
+        :rtype: :class:`Transaction`
+        """
+        if self._nested_txn:
+            yield self._nested_txn
+        else:
+            with self.create_transaction(
+                    check_error, log_errors, **kwargs) as txn:
+                self._nested_txn = txn
+                try:
+                    yield txn
+                finally:
+                    self._nested_txn = None
 
     @abc.abstractmethod
     def add_manager(self, connection_uri):

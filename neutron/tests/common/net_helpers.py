@@ -33,7 +33,6 @@ from oslo_config import cfg
 from oslo_utils import uuidutils
 import six
 
-from neutron.agent.common import config
 from neutron.agent.common import ovs_lib
 from neutron.agent.linux import bridge_lib
 from neutron.agent.linux import interface
@@ -41,6 +40,7 @@ from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_firewall
 from neutron.agent.linux import utils
 from neutron.common import utils as common_utils
+from neutron.conf.agent import common as config
 from neutron.db import db_base_plugin_common
 from neutron.plugins.ml2.drivers.linuxbridge.agent import \
     linuxbridge_neutron_agent as linuxbridge_agent
@@ -72,7 +72,8 @@ READ_TIMEOUT = os.environ.get('OS_TEST_READ_TIMEOUT', 5)
 CHILD_PROCESS_TIMEOUT = os.environ.get('OS_TEST_CHILD_PROCESS_TIMEOUT', 20)
 CHILD_PROCESS_SLEEP = os.environ.get('OS_TEST_CHILD_PROCESS_SLEEP', 0.5)
 
-TRANSPORT_PROTOCOLS = (n_const.PROTO_NAME_TCP, n_const.PROTO_NAME_UDP)
+TRANSPORT_PROTOCOLS = (n_const.PROTO_NAME_TCP, n_const.PROTO_NAME_UDP,
+                       n_const.PROTO_NAME_SCTP)
 
 OVS_MANAGER_TEST_PORT_FIRST = 6610
 OVS_MANAGER_TEST_PORT_LAST = 6639
@@ -127,9 +128,10 @@ def assert_async_ping(src_namespace, dst_ip, timeout=1, count=1, interval=1):
 
 
 @contextlib.contextmanager
-def async_ping(namespace, ips):
+def async_ping(namespace, ips, timeout=1, count=10):
     with futures.ThreadPoolExecutor(max_workers=len(ips)) as executor:
-        fs = [executor.submit(assert_async_ping, namespace, ip, count=10)
+        fs = [executor.submit(assert_async_ping, namespace, ip, count=count,
+                              timeout=timeout)
               for ip in ips]
         yield lambda: all(f.done() for f in fs)
         futures.wait(fs)
@@ -287,12 +289,11 @@ class RootHelperProcess(subprocess.Popen):
     @staticmethod
     def _read_stream(stream, timeout):
         if timeout:
-            poller = select.poll()
-            poller.register(stream.fileno())
-            poll_predicate = functools.partial(poller.poll, 1)
-            common_utils.wait_until_true(poll_predicate, timeout, 0.1,
-                                  RuntimeError(
-                                      'No output in %.2f seconds' % timeout))
+            poll_predicate = functools.partial(
+                select.select, [stream], [], [], 1)
+            common_utils.wait_until_true(
+                lambda: poll_predicate()[0], timeout, 0.1,
+                RuntimeError('No output in %.2f seconds' % timeout))
         return stream.readline()
 
     def writeline(self, data):
@@ -378,7 +379,7 @@ class Pinger(object):
     def start(self):
         if self.proc and self.proc.is_running:
             raise RuntimeError("This pinger has already a running process")
-        ip_version = ip_lib.get_ip_version(self.address)
+        ip_version = common_utils.get_ip_version(self.address)
         ping_exec = 'ping' if ip_version == 4 else 'ping6'
         cmd = [ping_exec, self.address, '-W', str(self.timeout)]
         if self.count:
@@ -403,6 +404,7 @@ class Pinger(object):
 class NetcatTester(object):
     TCP = n_const.PROTO_NAME_TCP
     UDP = n_const.PROTO_NAME_UDP
+    SCTP = n_const.PROTO_NAME_SCTP
     VERSION_TO_ALL_ADDRESS = {
         4: '0.0.0.0',
         6: '::',
@@ -423,7 +425,7 @@ class NetcatTester(object):
                                  will be spawned
         :param address: Server address from client point of view
         :param dst_port: Port on which netcat listens
-        :param protocol: Transport protocol, either 'tcp' or 'udp'
+        :param protocol: Transport protocol, either 'tcp', 'udp' or 'sctp'
         :param server_address: Address in server namespace on which netcat
                                should listen
         :param src_port: Source port of netcat process spawned in client
@@ -512,12 +514,15 @@ class NetcatTester(object):
             return True
 
     def _spawn_nc_in_namespace(self, namespace, address, listen=False):
-        cmd = ['nc', address, self.dst_port]
+        cmd = ['ncat', address, self.dst_port]
         if self.protocol == self.UDP:
             cmd.append('-u')
+        elif self.protocol == self.SCTP:
+            cmd.append('--sctp')
+
         if listen:
             cmd.append('-l')
-            if self.protocol == self.TCP:
+            if self.protocol in (self.TCP, self.SCTP):
                 cmd.append('-k')
         else:
             cmd.extend(['-w', '20'])

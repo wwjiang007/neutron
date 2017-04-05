@@ -19,15 +19,16 @@ import random
 import eventlet
 import mock
 from neutron_lib import constants as n_const
+from neutron_lib.utils import net
 from oslo_config import cfg
 from oslo_utils import uuidutils
 
-from neutron.agent.common import config as agent_config
 from neutron.agent.common import ovs_lib
 from neutron.agent.l2 import l2_agent_extensions_manager as ext_manager
 from neutron.agent.linux import interface
 from neutron.agent.linux import polling
 from neutron.common import utils
+from neutron.conf.agent import common as agent_config
 from neutron.conf import common as common_config
 from neutron.conf.plugins.ml2.drivers import ovs_conf
 from neutron.plugins.common import constants as p_const
@@ -169,7 +170,7 @@ class OVSAgentTestFramework(base.BaseOVSLinuxTestCase):
 
     def _create_test_port_dict(self):
         return {'id': uuidutils.generate_uuid(),
-                'mac_address': utils.get_random_mac(
+                'mac_address': net.get_random_mac(
                     'fa:16:3e:00:00:00'.split(':')),
                 'fixed_ips': [{
                     'ip_address': '10.%d.%d.%d' % (
@@ -212,8 +213,6 @@ class OVSAgentTestFramework(base.BaseOVSLinuxTestCase):
                'segmentation_id': network.get('segmentation_id', 1),
                'fixed_ips': port['fixed_ips'],
                'device_owner': n_const.DEVICE_OWNER_COMPUTE_PREFIX,
-               'port_security_enabled': True,
-               'security_groups': ['default'],
                'admin_state_up': True}
         return dev
 

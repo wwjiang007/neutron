@@ -14,15 +14,15 @@
 #    under the License.
 
 import mock
-from neutron_lib import exceptions
+from neutron_lib import context
 from oslo_utils import uuidutils
 
 from neutron.agent.l2.extensions import qos
+from neutron.agent.l2.extensions import qos_linux
 from neutron.api.rpc.callbacks.consumer import registry
 from neutron.api.rpc.callbacks import events
 from neutron.api.rpc.callbacks import resources
 from neutron.api.rpc.handlers import resources_rpc
-from neutron import context
 from neutron.objects.qos import policy
 from neutron.objects.qos import rule
 from neutron.plugins.ml2.drivers.openvswitch.agent import (
@@ -55,7 +55,7 @@ FAKE_RULE_ID = uuidutils.generate_uuid()
 REALLY_FAKE_RULE_ID = uuidutils.generate_uuid()
 
 
-class FakeDriver(qos.QosAgentDriver):
+class FakeDriver(qos_linux.QosLinuxAgentDriver):
 
     SUPPORTED_RULES = {qos_consts.RULE_TYPE_BANDWIDTH_LIMIT}
 
@@ -152,7 +152,7 @@ class QosExtensionBaseTestCase(base.BaseTestCase):
         # Don't rely on used driver
         mock.patch(
             'neutron.manager.NeutronManager.load_class_for_provider',
-            return_value=lambda: mock.Mock(spec=qos.QosAgentDriver)
+            return_value=lambda: mock.Mock(spec=qos_linux.QosLinuxAgentDriver)
         ).start()
 
 
@@ -222,7 +222,7 @@ class QosExtensionRpcTestCase(QosExtensionBaseTestCase):
     def test_delete_unknown_port(self):
         port = self._create_test_port_dict()
         self.qos_ext.delete_port(self.context, port)
-        self.assertFalse(self.qos_ext.qos_driver.delete.called)
+        self.assertTrue(self.qos_ext.qos_driver.delete.called)
         self.assertIsNone(self.qos_ext.policy_map.get_port_policy(port))
 
     def test__handle_notification_ignores_all_event_types_except_updated(self):
@@ -414,9 +414,11 @@ class PortPolicyMapTestCase(base.BaseTestCase):
         self.assertNotIn(TEST_PORT['port_id'], self.policy_map.port_policies)
         self.assertIn(TEST_POLICY2.id, self.policy_map.known_policies)
 
-    def test_clean_by_port_raises_exception_for_unknown_port(self):
-        self.assertRaises(exceptions.PortNotFound,
-                          self.policy_map.clean_by_port, TEST_PORT)
+    def test_clean_by_port_for_unknown_port(self):
+        self.policy_map._clean_policy_info = mock.Mock()
+        self.policy_map.clean_by_port(TEST_PORT)
+
+        self.policy_map._clean_policy_info.assert_not_called()
 
     def test_has_policy_changed(self):
         self._set_ports()

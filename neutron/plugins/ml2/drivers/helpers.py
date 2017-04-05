@@ -15,6 +15,7 @@
 
 import random
 
+from neutron_lib import context as neutron_ctx
 from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -60,6 +61,12 @@ class SegmentTypeDriver(BaseTypeDriver):
         self.primary_keys = set(dict(model.__table__.columns))
         self.primary_keys.remove("allocated")
 
+    # TODO(ataraday): get rid of this method when old TypeDriver won't be used
+    def _get_session(self, arg):
+        if isinstance(arg, neutron_ctx.Context):
+            return arg.session
+        return arg
+
     def allocate_fully_specified_segment(self, context, **raw_segment):
         """Allocate segment fully specified by raw_segment.
 
@@ -69,10 +76,11 @@ class SegmentTypeDriver(BaseTypeDriver):
         """
 
         network_type = self.get_type()
+        session = self._get_session(context)
         try:
-            with context.session.begin(subtransactions=True):
+            with session.begin(subtransactions=True):
                 alloc = (
-                    context.session.query(self.model).filter_by(**raw_segment).
+                    session.query(self.model).filter_by(**raw_segment).
                     first())
                 if alloc:
                     if alloc.allocated:
@@ -84,7 +92,7 @@ class SegmentTypeDriver(BaseTypeDriver):
                                   "started ",
                                   {"type": network_type,
                                    "segment": raw_segment})
-                        count = (context.session.query(self.model).
+                        count = (session.query(self.model).
                                  filter_by(allocated=False, **raw_segment).
                                  update({"allocated": True}))
                         if count:
@@ -105,7 +113,7 @@ class SegmentTypeDriver(BaseTypeDriver):
                 LOG.debug("%(type)s segment %(segment)s create started",
                           {"type": network_type, "segment": raw_segment})
                 alloc = self.model(allocated=True, **raw_segment)
-                alloc.save(context.session)
+                alloc.save(session)
                 LOG.debug("%(type)s segment %(segment)s create done",
                           {"type": network_type, "segment": raw_segment})
 
@@ -124,8 +132,9 @@ class SegmentTypeDriver(BaseTypeDriver):
         """
 
         network_type = self.get_type()
-        with context.session.begin(subtransactions=True):
-            select = (context.session.query(self.model).
+        session = self._get_session(context)
+        with session.begin(subtransactions=True):
+            select = (session.query(self.model).
                       filter_by(allocated=False, **filters))
 
             # Selected segment can be allocated before update by someone else,
@@ -141,7 +150,7 @@ class SegmentTypeDriver(BaseTypeDriver):
                       "started with %(segment)s ",
                       {"type": network_type,
                        "segment": raw_segment})
-            count = (context.session.query(self.model).
+            count = (session.query(self.model).
                      filter_by(allocated=False, **raw_segment).
                      update({"allocated": True}))
             if count:

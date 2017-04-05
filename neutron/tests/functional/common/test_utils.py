@@ -10,7 +10,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import eventlet
 import testtools
 
 from neutron.common import utils
@@ -22,5 +21,5 @@ class TestWaitUntilTrue(base.BaseTestCase):
         utils.wait_until_true(lambda: True)
 
     def test_wait_until_true_predicate_fails(self):
-        with testtools.ExpectedException(eventlet.timeout.Timeout):
+        with testtools.ExpectedException(utils.WaitTimeout):
             utils.wait_until_true(lambda: False, 2)

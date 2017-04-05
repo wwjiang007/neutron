@@ -18,6 +18,7 @@ import functools
 from neutron_lib.api import validators
 from neutron_lib import constants
 from neutron_lib import exceptions as n_exc
+from neutron_lib.utils import net
 from oslo_config import cfg
 from oslo_log import log as logging
 from sqlalchemy.orm import exc
@@ -25,7 +26,6 @@ from sqlalchemy.orm import exc
 from neutron.api.v2 import attributes
 from neutron.common import constants as n_const
 from neutron.common import exceptions
-from neutron.common import utils
 from neutron.db import _utils as db_utils
 from neutron.db import common_db_mixin
 from neutron.db import models_v2
@@ -81,7 +81,7 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
 
     @staticmethod
     def _generate_mac():
-        return utils.get_random_mac(cfg.CONF.base_mac.split(':'))
+        return net.get_random_mac(cfg.CONF.base_mac.split(':'))
 
     def _is_mac_in_use(self, context, network_id, mac_address):
         return bool(context.session.query(models_v2.Port).
@@ -316,18 +316,8 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
     def _port_filter_hook(context, original_model, conditions):
         # Apply the port filter only in non-admin and non-advsvc context
         if db_utils.model_query_scope_is_project(context, original_model):
-            conditions |= (
-                (context.tenant_id == models_v2.Network.tenant_id) &
-                (models_v2.Network.id == models_v2.Port.network_id))
+            conditions |= (models_v2.Port.network_id.in_(
+                context.session.query(models_v2.Network.id).
+                filter(context.project_id == models_v2.Network.project_id).
+                subquery()))
         return conditions
-
-    @staticmethod
-    def _port_query_hook(context, original_model, query):
-        # we need to outerjoin to networks if the model query scope
-        # is necessary so we can filter based on network id. without
-        # this the conditions in the filter hook cause the networks
-        # table to be added to the FROM statement so we get lots of
-        # duplicated rows that break the COUNT operation
-        if db_utils.model_query_scope_is_project(context, original_model):
-            query = query.outerjoin(models_v2.Network)
-        return query

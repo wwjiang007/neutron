@@ -23,14 +23,12 @@ import gc
 import inspect
 import os
 import os.path
-import sys
 import weakref
 
-from debtcollector import moves
 import eventlet.timeout
 import fixtures
 import mock
-from neutron_lib.plugins import directory
+from neutron_lib import fixture
 from oslo_concurrency.fixture import lockutils
 from oslo_config import cfg
 from oslo_messaging import conffixture as messaging_conffixture
@@ -44,12 +42,13 @@ import testtools
 from neutron._i18n import _
 from neutron.agent.linux import external_process
 from neutron.api.rpc.callbacks.consumer import registry as rpc_consumer_reg
+from neutron.api.rpc.callbacks.producer import registry as rpc_producer_reg
 from neutron.callbacks import manager as registry_manager
 from neutron.callbacks import registry
 from neutron.common import config
 from neutron.common import rpc as n_rpc
-from neutron.common import utils
 from neutron.db import agentschedulers_db
+from neutron.db import api as db_api
 from neutron import manager
 from neutron import policy
 from neutron.quota import resource_registry
@@ -71,16 +70,6 @@ def etcdir(*p):
 
 def fake_use_fatal_exceptions(*args):
     return True
-
-
-for _name in ('get_related_rand_names',
-              'get_rand_name',
-              'get_rand_device_name',
-              'get_related_rand_device_names'):
-    setattr(sys.modules[__name__], _name, moves.moved_function(
-        getattr(utils, _name), _name, __name__,
-        message='use "neutron.common.utils.%s" instead' % _name,
-        version='Newton', removal_version='Ocata'))
 
 
 def bool_from_env(key, strict=False, default=False):
@@ -303,17 +292,20 @@ class BaseTestCase(DietTestCase):
         self.setup_rpc_mocks()
         self.setup_config()
         self.setup_test_registry_instance()
-        self.setup_test_directory_instance()
+        # Give a private copy of the directory to each test.
+        self.useFixture(fixture.PluginDirectoryFixture())
 
         policy.init()
         self.addCleanup(policy.reset)
         self.addCleanup(resource_registry.unregister_all_resources)
+        self.addCleanup(db_api.sqla_remove_all)
         self.addCleanup(rpc_consumer_reg.clear)
+        self.addCleanup(rpc_producer_reg.clear)
 
     def get_new_temp_dir(self):
         """Create a new temporary directory.
 
-        :returns fixtures.TempDir
+        :returns: fixtures.TempDir
         """
         return self.useFixture(fixtures.TempDir())
 
@@ -322,7 +314,7 @@ class BaseTestCase(DietTestCase):
 
         Returns the same directory during the whole test case.
 
-        :returns fixtures.TempDir
+        :returns: fixtures.TempDir
         """
         if not hasattr(self, '_temp_dir'):
             self._temp_dir = self.get_new_temp_dir()
@@ -341,7 +333,7 @@ class BaseTestCase(DietTestCase):
         :type filename: string
         :param root: temporary directory to create a new file in
         :type root: fixtures.TempDir
-        :returns absolute file path string
+        :returns: absolute file path string
         """
         root = root or self.get_default_temp_dir()
         return root.join(filename)
@@ -372,14 +364,6 @@ class BaseTestCase(DietTestCase):
         self._callback_manager = registry_manager.CallbacksManager()
         mock.patch.object(registry, '_get_callback_manager',
                           return_value=self._callback_manager).start()
-
-    def setup_test_directory_instance(self):
-        """Give a private copy of the directory to each test."""
-        # TODO(armax): switch to using a fixture to stop relying on stubbing
-        # out _get_plugin_directory directly.
-        self._plugin_directory = directory._PluginDirectory()
-        mock.patch.object(directory, '_get_plugin_directory',
-                          return_value=self._plugin_directory).start()
 
     def setup_config(self, args=None):
         """Tests that need a non-default config can override this method."""

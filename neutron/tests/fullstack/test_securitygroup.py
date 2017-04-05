@@ -61,43 +61,55 @@ class BaseSecurityGroupsSameNetworkTest(base.BaseFullStackTestCase):
 
     def assert_connection(self, *args, **kwargs):
         netcat = net_helpers.NetcatTester(*args, **kwargs)
-        self.addCleanup(netcat.stop_processes)
-        self.assertTrue(netcat.test_connectivity())
-        netcat.stop_processes()
+        try:
+            self.assertTrue(netcat.test_connectivity())
+        finally:
+            netcat.stop_processes()
 
     def assert_no_connection(self, *args, **kwargs):
         netcat = net_helpers.NetcatTester(*args, **kwargs)
-        self.addCleanup(netcat.stop_processes)
-        self.assertRaises(RuntimeError, netcat.test_connectivity)
-        netcat.stop_processes()
+        try:
+            self.assertRaises(RuntimeError, netcat.test_connectivity)
+        finally:
+            netcat.stop_processes()
 
 
 class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
 
-    l2_agent_type = constants.AGENT_TYPE_OVS
     network_type = 'vxlan'
     scenarios = [
-        ('hybrid', {'firewall_driver': 'iptables_hybrid',
-                    'of_interface': 'native',
-                    'ovsdb_interface': 'native'}),
-        ('openflow-cli_ovsdb-cli', {'firewall_driver': 'openvswitch',
-                                    'of_interface': 'ovs-ofctl',
-                                    'ovsdb_interface': 'vsctl'}),
-        ('openflow-native_ovsdb-native', {'firewall_driver': 'openvswitch',
-                                          'of_interface': 'native',
-                                          'ovsdb_interface': 'native'})]
+        ('ovs-hybrid', {
+            'firewall_driver': 'iptables_hybrid',
+            'of_interface': 'native',
+            'ovsdb_interface': 'native',
+            'l2_agent_type': constants.AGENT_TYPE_OVS}),
+        ('ovs-openflow-cli_ovsdb-cli', {
+            'firewall_driver': 'openvswitch',
+            'of_interface': 'ovs-ofctl',
+            'ovsdb_interface': 'vsctl',
+            'l2_agent_type': constants.AGENT_TYPE_OVS}),
+        ('ovs-openflow-native_ovsdb-native', {
+            'firewall_driver': 'openvswitch',
+            'of_interface': 'native',
+            'ovsdb_interface': 'native',
+            'l2_agent_type': constants.AGENT_TYPE_OVS}),
+        ('linuxbridge-iptables', {
+            'firewall_driver': 'iptables',
+            'l2_agent_type': constants.AGENT_TYPE_LINUXBRIDGE})]
 
     # NOTE(toshii): As a firewall_driver can interfere with others,
     # the recommended way to add test is to expand this method, not
     # adding another.
-    def test_tcp_securitygroup(self):
-        """Tests if a TCP security group rule is working, by confirming
-        that 1. connection from allowed security group is allowed,
-             2. connection from elsewhere is blocked,
+    def test_securitygroup(self):
+        """Tests if a security group rules are working, by confirming
+        that 0. traffic is allowed when port security is disabled,
+             1. connection from outside of allowed security group is blocked
+             2. connection from allowed security group is permitted
              3. traffic not explicitly allowed (eg. ICMP) is blocked,
              4. a security group update takes effect,
              5. a remote security group member addition works, and
              6. an established connection stops by deleting a SG rule.
+             7. test other protocol functionality by using SCTP protocol
         """
         index_to_sg = [0, 0, 1]
         if self.firewall_driver == 'iptables_hybrid':
@@ -117,8 +129,9 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
         ports = [
             self.safe_client.create_port(tenant_uuid, network['id'],
                                          self.environment.hosts[host].hostname,
-                                         security_groups=[sgs[sg]['id']])
-            for host, sg in zip(index_to_host, index_to_sg)]
+                                         security_groups=[],
+                                         port_security_enabled=False)
+            for host in index_to_host]
 
         self.safe_client.create_security_group_rule(
             tenant_uuid, sgs[0]['id'],
@@ -140,14 +153,39 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
         for vm in vms:
             vm.block_until_boot()
 
-        # 1. check if connection from allowed security group is allowed
+        # 0. check that traffic is allowed when port security is disabled
         self.assert_connection(
             vms[1].namespace, vms[0].namespace, vms[0].ip, 3333,
             net_helpers.NetcatTester.TCP)
-
-        # 2. check if connection from elsewhere is blocked
-        self.assert_no_connection(
+        self.assert_connection(
             vms[2].namespace, vms[0].namespace, vms[0].ip, 3333,
+            net_helpers.NetcatTester.TCP)
+        net_helpers.assert_ping(vms[0].namespace, vms[1].ip)
+        net_helpers.assert_ping(vms[0].namespace, vms[2].ip)
+        net_helpers.assert_ping(vms[1].namespace, vms[2].ip)
+
+        # Apply security groups to the ports
+        for port, sg in zip(ports, index_to_sg):
+            self.safe_client.client.update_port(
+                port['id'],
+                body={'port': {'port_security_enabled': True,
+                               'security_groups': [sgs[sg]['id']]}})
+
+        # 1. connection from outside of allowed security group is blocked
+        netcat = net_helpers.NetcatTester(
+            vms[2].namespace, vms[0].namespace, vms[0].ip, 3333,
+            net_helpers.NetcatTester.TCP)
+        # Wait until port update takes effect on the ports
+        common_utils.wait_until_true(
+            netcat.test_no_connectivity,
+            exception=AssertionError(
+                "Still can connect to the VM from different host.")
+        )
+        netcat.stop_processes()
+
+        # 2. check if connection from allowed security group is permitted
+        self.assert_connection(
+            vms[1].namespace, vms[0].namespace, vms[0].ip, 3333,
             net_helpers.NetcatTester.TCP)
 
         # 3. check if traffic not explicitly allowed (eg. ICMP) is blocked
@@ -183,6 +221,8 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
             vms[2].namespace, vms[0].namespace, vms[0].ip, 3355,
             net_helpers.NetcatTester.TCP)
 
+        # 6. check if an established connection stops by deleting
+        #    the supporting SG rule.
         index_to_host.append(index_to_host[2])
         index_to_sg.append(1)
         ports.append(
@@ -209,9 +249,23 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
         self.addCleanup(netcat.stop_processes)
         self.assertTrue(netcat.test_connectivity())
 
-        # 6. check if an established connection stops by deleting
-        #    the supporting SG rule.
         self.client.delete_security_group_rule(rule2['id'])
         common_utils.wait_until_true(lambda: netcat.test_no_connectivity(),
                                      sleep=8)
         netcat.stop_processes()
+
+        # 7. check SCTP is supported by security group
+        self.assert_no_connection(
+            vms[1].namespace, vms[0].namespace, vms[0].ip, 3366,
+            net_helpers.NetcatTester.SCTP)
+
+        self.safe_client.create_security_group_rule(
+            tenant_uuid, sgs[0]['id'],
+            remote_group_id=sgs[0]['id'], direction='ingress',
+            ethertype=constants.IPv4,
+            protocol=constants.PROTO_NUM_SCTP,
+            port_range_min=3366, port_range_max=3366)
+
+        self.assert_connection(
+            vms[1].namespace, vms[0].namespace, vms[0].ip, 3366,
+            net_helpers.NetcatTester.SCTP)

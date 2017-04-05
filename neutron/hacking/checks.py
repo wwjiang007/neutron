@@ -17,8 +17,6 @@ import re
 
 from hacking import core
 from neutron_lib.hacking import checks
-import pep8
-import six
 
 
 def flake8ext(f):
@@ -63,10 +61,6 @@ def _regex_for_level(level, hint):
     }
 
 
-log_translation_hint = re.compile(
-    '|'.join('(?:%s)' % _regex_for_level(level, hint)
-             for level, hint in six.iteritems(_all_log_levels)))
-
 log_warn = re.compile(
     r"(.)*LOG\.(warn)\(\s*('|\"|_)")
 unittest_imports_dot = re.compile(r"\bimport[\s]+unittest\b")
@@ -76,20 +70,6 @@ filter_match = re.compile(r".*filter\(lambda ")
 tests_imports_dot = re.compile(r"\bimport[\s]+neutron.tests\b")
 tests_imports_from1 = re.compile(r"\bfrom[\s]+neutron.tests\b")
 tests_imports_from2 = re.compile(r"\bfrom[\s]+neutron[\s]+import[\s]+tests\b")
-
-
-@flake8ext
-def validate_log_translations(logical_line, physical_line, filename):
-    """N320 - Log messages require translation."""
-    # Translations are not required in the test directory
-    if "neutron/tests" in filename:
-        return
-    if pep8.noqa(physical_line):
-        return
-
-    msg = "N320: Log messages require translation hints!"
-    if log_translation_hint.match(logical_line):
-        yield (0, msg)
 
 
 @flake8ext
@@ -369,7 +349,7 @@ def check_no_imports_from_tests(logical_line, filename, noqa):
 def check_python3_no_filter(logical_line):
     """N344 - Use list comprehension instead of filter(lambda)."""
 
-    msg = ("N343: Use list comprehension instead of "
+    msg = ("N344: Use list comprehension instead of "
            "filter(lambda obj: test(obj), data) on python3.")
 
     if filter_match.match(logical_line):
@@ -389,8 +369,24 @@ def check_assertIsNone(logical_line, filename):
                    "sentences not allowed")
 
 
+@flake8ext
+def check_no_sqlalchemy_event_import(logical_line, filename, noqa):
+    """N346 - Use neutron.db.api.sqla_listen instead of sqlalchemy event."""
+    if noqa:
+        return
+    is_import = (logical_line.startswith('import') or
+                 logical_line.startswith('from'))
+    if not is_import:
+        return
+    for kw in ('sqlalchemy', 'event'):
+        if kw not in logical_line:
+            return
+    yield (0, "N346: Register sqlalchemy events through "
+              "neutron.db.api.sqla_listen so they can be cleaned up between "
+              "unit tests")
+
+
 def factory(register):
-    register(validate_log_translations)
     register(use_jsonutils)
     register(check_assert_called_once_with)
     register(no_translate_debug_logs)
@@ -410,3 +406,4 @@ def factory(register):
     register(check_no_imports_from_tests)
     register(check_python3_no_filter)
     register(check_assertIsNone)
+    register(check_no_sqlalchemy_event_import)

@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.api.definitions import portbindings
+from neutron_lib.api.definitions import provider_net as provider
 from neutron_lib.api import validators
 from neutron_lib import constants
 from neutron_lib import exceptions as exc
@@ -27,13 +29,10 @@ from neutron.db import api as db_api
 from neutron.db import segments_db
 from neutron.extensions import external_net
 from neutron.extensions import multiprovidernet as mpnet
-from neutron.extensions import portbindings
-from neutron.extensions import providernet as provider
 from neutron.extensions import vlantransparent
 from neutron.plugins.ml2.common import exceptions as ml2_exc
 from neutron.plugins.ml2 import driver_api as api
 from neutron.plugins.ml2 import models
-from neutron.services.qos import qos_consts
 
 LOG = log.getLogger(__name__)
 
@@ -191,8 +190,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
     def create_network_segments(self, context, network, tenant_id):
         """Call type drivers to create network segments."""
         segments = self._process_provider_create(network)
-        session = context.session
-        with session.begin(subtransactions=True):
+        with db_api.context_manager.writer.using(context):
             network_id = network['id']
             if segments:
                 for segment_index, segment in enumerate(segments):
@@ -225,7 +223,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         self.validate_provider_segment(segment)
 
         # Reserve segment in type driver
-        with context.session.begin(subtransactions=True):
+        with db_api.context_manager.writer.using(context):
             return self.reserve_provider_segment(context, segment)
 
     def is_partial_segment(self, segment):
@@ -354,8 +352,8 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         self._register_mechanisms()
         self.host_filtering_supported = self.is_host_filtering_supported()
         if not self.host_filtering_supported:
-            LOG.warning(_LW("Host filtering is disabled because at least one "
-                            "mechanism doesn't support it."))
+            LOG.info(_LI("No mechanism drivers provide segment reachability "
+                         "information for agent scheduling."))
 
     def _register_mechanisms(self):
         """Register all mechanism drivers.
@@ -368,48 +366,6 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
             self.ordered_mech_drivers.append(ext)
         LOG.info(_LI("Registered mechanism drivers: %s"),
                  [driver.name for driver in self.ordered_mech_drivers])
-
-    @property
-    def supported_qos_rule_types(self):
-        if not self.ordered_mech_drivers:
-            return []
-
-        rule_types = set(qos_consts.VALID_RULE_TYPES)
-        binding_driver_found = False
-
-        # Recalculate on every call to allow drivers determine supported rule
-        # types dynamically
-        for driver in self.ordered_mech_drivers:
-            driver_obj = driver.obj
-            if driver_obj._supports_port_binding:
-                binding_driver_found = True
-                if hasattr(driver_obj, 'supported_qos_rule_types'):
-                    new_rule_types = \
-                        rule_types & set(driver_obj.supported_qos_rule_types)
-                    dropped_rule_types = new_rule_types - rule_types
-                    if dropped_rule_types:
-                        LOG.info(
-                            _LI("%(rule_types)s rule types disabled for ml2 "
-                                "because %(driver)s does not support them"),
-                            {'rule_types': ', '.join(dropped_rule_types),
-                             'driver': driver.name})
-                    rule_types = new_rule_types
-                else:
-                    # at least one of drivers does not support QoS, meaning
-                    # there are no rule types supported by all of them
-                    LOG.warning(
-                        _LW("%s does not support QoS; "
-                            "no rule types available"),
-                        driver.name)
-                    return []
-
-        if binding_driver_found:
-            rule_types = list(rule_types)
-        else:
-            rule_types = []
-        LOG.debug("Supported QoS rule types "
-                  "(common subset for all mech drivers): %s", rule_types)
-        return rule_types
 
     def initialize(self):
         for driver in self.ordered_mech_drivers:
@@ -980,9 +936,9 @@ class ExtensionManager(stevedore.named.NamedExtensionManager):
             try:
                 getattr(driver.obj, method_name)(session, base_model, result)
             except Exception:
-                LOG.error(_LE("Extension driver '%(name)s' failed in "
-                          "%(method)s"),
-                          {'name': driver.name, 'method': method_name})
+                LOG.exception(_LE("Extension driver '%(name)s' failed in "
+                                  "%(method)s"),
+                              {'name': driver.name, 'method': method_name})
                 raise ml2_exc.ExtensionDriverError(driver=driver.name)
 
     def extend_network_dict(self, session, base_model, result):

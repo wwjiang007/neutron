@@ -25,7 +25,6 @@ from oslo_versionedobjects import fields as obj_fields
 import six
 
 from neutron._i18n import _
-from neutron.api.v2 import attributes
 from neutron.db import api as db_api
 from neutron.db import standard_attr
 from neutron.objects.db import api as obj_db_api
@@ -62,6 +61,15 @@ class Pager(object):
     specify sorting and pagination criteria.
     '''
     def __init__(self, sorts=None, limit=None, page_reverse=None, marker=None):
+        '''
+        :param sorts: A list of (key, direction) tuples.
+                      direction: True == ASC, False == DESC
+        :param limit: maximum number of items to return
+        :param page_reverse: True if sort direction is reversed.
+        :param marker: the last item of the previous page; when used, returns
+                       next results after the marker resource.
+        '''
+
         self.sorts = sorts
         self.limit = limit
         self.page_reverse = page_reverse
@@ -124,7 +132,6 @@ class NeutronObject(obj_base.VersionedObject,
                     dict_[field_name].to_dict() if value else None)
             else:
                 dict_[field_name] = field.to_primitive(self, field_name, value)
-        attributes.populate_project_info(dict_)
         return dict_
 
     @classmethod
@@ -398,11 +405,12 @@ class NeutronDbObject(NeutronObject):
     @classmethod
     def get_object(cls, context, **kwargs):
         """
-        Fetch object from DB and convert it to a versioned object.
+        Return the first result of given context or None if the result doesn't
+        contain any row. Next, convert it to a versioned object.
 
         :param context:
         :param kwargs: multiple keys defined by key=value pairs
-        :return: single object of NeutronDbObject class
+        :return: single object of NeutronDbObject class or None
         """
         lookup_keys = set(kwargs.keys())
         all_keys = itertools.chain([cls.primary_keys], cls.unique_keys)
@@ -423,7 +431,7 @@ class NeutronDbObject(NeutronObject):
     def get_objects(cls, context, _pager=None, validate_filters=True,
                     **kwargs):
         """
-        Fetch objects from DB and convert them to versioned objects.
+        Fetch all results from DB and convert them to versioned objects.
 
         :param context:
         :param _pager: a Pager object representing advanced sorting/pagination
@@ -431,7 +439,7 @@ class NeutronDbObject(NeutronObject):
         :param validate_filters: Raises an error in case of passing an unknown
                                  filter
         :param kwargs: multiple keys defined by key=value pairs
-        :return: list of objects of NeutronDbObject class
+        :return: list of objects of NeutronDbObject class or empty list
         """
         if validate_filters:
             cls.validate_filters(**kwargs)
@@ -471,18 +479,27 @@ class NeutronDbObject(NeutronObject):
         return str(value)
 
     @staticmethod
-    def filter_to_json_str(value):
+    def filter_to_json_str(value, default=None):
         def _dict_to_json(v):
-            return jsonutils.dumps(
-                collections.OrderedDict(
-                    sorted(v.items(), key=lambda t: t[0])
-                ) if v else {}
+            return (
+                jsonutils.dumps(
+                    collections.OrderedDict(
+                        sorted(v.items(), key=lambda t: t[0])
+                    )
+                ) if v else default
             )
 
         if isinstance(value, list):
             return [_dict_to_json(val) for val in value]
         v = _dict_to_json(value)
         return v
+
+    @staticmethod
+    def load_json_from_str(field, default=None):
+        value = field or default
+        if value:
+            value = jsonutils.loads(value)
+        return value
 
     def _get_changed_persistent_fields(self):
         fields = self.obj_get_changes()

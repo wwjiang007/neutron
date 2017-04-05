@@ -17,6 +17,7 @@ import abc
 
 from neutron_lib.api import converters
 from neutron_lib.api import extensions
+from neutron_lib import constants
 from neutron_lib.db import constants as db_const
 from neutron_lib import exceptions as nexception
 import six
@@ -24,7 +25,6 @@ import six
 from neutron._i18n import _
 from neutron.api.v2 import resource_helper
 from neutron.conf import quota
-from neutron.plugins.common import constants
 
 
 # L3 Exceptions
@@ -84,6 +84,7 @@ class RouterInterfaceAttachmentConflict(nexception.Conflict):
     message = _("Error %(reason)s while attempting the operation.")
 
 
+ROUTER = 'router'
 ROUTERS = 'routers'
 FLOATINGIP = 'floatingip'
 FLOATINGIPS = '%ss' % FLOATINGIP
@@ -195,7 +196,7 @@ class L3(extensions.ExtensionDescriptor):
                                  'remove_router_interface': 'PUT'}}
         return resource_helper.build_resource_info(plural_mappings,
                                                    RESOURCE_ATTRIBUTE_MAP,
-                                                   constants.L3_ROUTER_NAT,
+                                                   constants.L3,
                                                    action_map=action_map,
                                                    register_quota=True)
 
@@ -235,7 +236,7 @@ class RouterPluginBase(object):
         pass
 
     @abc.abstractmethod
-    def add_router_interface(self, context, router_id, interface_info):
+    def add_router_interface(self, context, router_id, interface_info=None):
         pass
 
     @abc.abstractmethod

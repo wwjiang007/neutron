@@ -13,17 +13,17 @@
 #    under the License.
 
 import mock
+from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
+from neutron_lib import context
 
 from neutron.api.rpc.handlers import l3_rpc
 from neutron.callbacks import events
 from neutron.callbacks import registry
 from neutron.callbacks import resources
 from neutron.common import topics
-from neutron import context
 from neutron.extensions import external_net
 from neutron.extensions import l3
-from neutron.extensions import portbindings
 from neutron.tests.common import helpers
 from neutron.tests.unit.plugins.ml2 import base as ml2_test_base
 
@@ -36,10 +36,15 @@ class L3DvrTestCaseBase(ml2_test_base.ML2TestFramework):
         super(L3DvrTestCaseBase, self).setUp()
         self.l3_agent = helpers.register_l3_agent(
             agent_mode=constants.L3_AGENT_MODE_DVR_SNAT)
+        # register OVS agents to avoid time wasted on committing
+        # port binding failures on every port update
+        helpers.register_ovs_agent(host='host1')
+        helpers.register_ovs_agent(host='host2')
 
-    def _create_router(self, distributed=True, ha=False):
+    def _create_router(self, distributed=True, ha=False, admin_state_up=True):
         return (super(L3DvrTestCaseBase, self).
-                _create_router(distributed=distributed, ha=ha))
+                _create_router(distributed=distributed, ha=ha,
+                               admin_state_up=admin_state_up))
 
 
 class L3DvrTestCase(L3DvrTestCaseBase):
@@ -1136,7 +1141,9 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                     self.context, vm_port['port']['id'],
                     {'port': {
                         portbindings.PROFILE: live_migration_port_profile}})
-                l3_notifier.routers_updated_on_host.assert_called_once_with(
+                # this will be called twice, once for port update, and once
+                # for new binding
+                l3_notifier.routers_updated_on_host.assert_any_call(
                     self.context, {router['id']}, HOST2)
                 # Check the port-binding is still with the old HOST1, but
                 # the router update notification has been sent to the new
@@ -1148,7 +1155,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                     # Since we have already created the floatingip for the
                     # port, it should be creating the floatingip agent gw
                     # port for the new host if it does not exist.
-                    fip_agent.assert_called_once_with(
+                    fip_agent.assert_any_call(
                         mock.ANY, floating_ip['floating_network_id'], HOST2)
 
     def test_router_notifications(self):

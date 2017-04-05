@@ -22,11 +22,16 @@ import webob
 
 from neutron._i18n import _LI
 from neutron.agent.linux import utils as agent_utils
+from neutron.common import constants
 from neutron.notifiers import batch_notifier
 
 LOG = logging.getLogger(__name__)
 
 KEEPALIVED_STATE_CHANGE_SERVER_BACKLOG = 4096
+
+TRANSLATION_MAP = {'master': constants.HA_ROUTER_STATE_ACTIVE,
+                   'backup': constants.HA_ROUTER_STATE_STANDBY,
+                   'fault': constants.HA_ROUTER_STATE_STANDBY}
 
 
 class KeepalivedStateChangeHandler(object):
@@ -77,6 +82,21 @@ class AgentMixin(object):
             self._calculate_batch_duration(), self.notify_server)
         eventlet.spawn(self._start_keepalived_notifications_server)
 
+    def _get_router_info(self, router_id):
+        try:
+            return self.router_info[router_id]
+        except KeyError:
+            LOG.info(_LI('Router %s is not managed by this agent. It was '
+                         'possibly deleted concurrently.'), router_id)
+
+    def check_ha_state_for_router(self, router_id, current_state):
+        ri = self._get_router_info(router_id)
+        if ri and current_state != TRANSLATION_MAP[ri.ha_state]:
+            LOG.debug("Updating server with state %(state)s for router "
+                      "%(router_id)s", {'router_id': router_id,
+                                        'state': ri.ha_state})
+            self.state_change_notifier.queue_event((router_id, ri.ha_state))
+
     def _start_keepalived_notifications_server(self):
         state_change_server = (
             L3AgentKeepalivedStateChangeServer(self, self.conf))
@@ -97,32 +117,40 @@ class AgentMixin(object):
                  {'router_id': router_id,
                   'state': state})
 
-        try:
-            ri = self.router_info[router_id]
-        except KeyError:
-            LOG.info(_LI('Router %s is not managed by this agent. It was '
-                         'possibly deleted concurrently.'), router_id)
+        ri = self._get_router_info(router_id)
+        if ri is None:
             return
 
-        self._configure_ipv6_ra_on_ext_gw_port_if_necessary(ri, state)
+        # TODO(dalvarez): Fix bug 1677279 by moving the IPv6 parameters
+        # configuration to keepalived-state-change in order to remove the
+        # dependency that currently exists on l3-agent running for the IPv6
+        # failover.
+        self._configure_ipv6_params_on_ext_gw_port_if_necessary(ri, state)
         if self.conf.enable_metadata_proxy:
             self._update_metadata_proxy(ri, router_id, state)
         self._update_radvd_daemon(ri, state)
+        self.pd.process_ha_state(router_id, state == 'master')
         self.state_change_notifier.queue_event((router_id, state))
 
-    def _configure_ipv6_ra_on_ext_gw_port_if_necessary(self, ri, state):
+    def _configure_ipv6_params_on_ext_gw_port_if_necessary(self, ri, state):
         # If ipv6 is enabled on the platform, ipv6_gateway config flag is
         # not set and external_network associated to the router does not
         # include any IPv6 subnet, enable the gateway interface to accept
-        # Router Advts from upstream router for default route.
+        # Router Advts from upstream router for default route on master
+        # instances as well as ipv6 forwarding. Otherwise, disable them.
         ex_gw_port_id = ri.ex_gw_port and ri.ex_gw_port['id']
-        if state == 'master' and ex_gw_port_id:
-            interface_name = ri.get_external_device_name(ex_gw_port_id)
-            if ri.router.get('distributed', False):
-                namespace = ri.ha_namespace
-            else:
-                namespace = ri.ns_name
-            ri._enable_ra_on_gw(ri.ex_gw_port, namespace, interface_name)
+        if not ex_gw_port_id:
+            return
+
+        interface_name = ri.get_external_device_name(ex_gw_port_id)
+        if ri.router.get('distributed', False):
+            namespace = ri.ha_namespace
+        else:
+            namespace = ri.ns_name
+
+        enable = state == 'master'
+        ri._configure_ipv6_params_on_gw(ri.ex_gw_port, namespace,
+                                        interface_name, enable)
 
     def _update_metadata_proxy(self, ri, router_id, state):
         if state == 'master':
@@ -144,10 +172,7 @@ class AgentMixin(object):
             ri.disable_radvd()
 
     def notify_server(self, batched_events):
-        translation_map = {'master': 'active',
-                           'backup': 'standby',
-                           'fault': 'standby'}
-        translated_states = dict((router_id, translation_map[state]) for
+        translated_states = dict((router_id, TRANSLATION_MAP[state]) for
                                  router_id, state in batched_events)
         LOG.debug('Updating server with HA routers states %s',
                   translated_states)

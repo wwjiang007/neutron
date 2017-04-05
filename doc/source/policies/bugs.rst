@@ -138,7 +138,7 @@ called Neutron `stadium <http://governance.openstack.org/reference/projects/neut
 Because of that, their release is managed centrally by the Neutron
 release team; requests for releases need to be funnelled and screened
 properly before they can happen. Release request process is described `here
-<http://docs.openstack.org/developer/neutron/stadium/sub_project_guidelines.html#sub-project-release-process>`_.
+<http://docs.openstack.org/developer/neutron/stadium/guidelines.html#releases>`_.
 
 
 .. _guidelines:
@@ -233,7 +233,9 @@ The process of bug triaging consists of the following steps:
 
   * the ReST API, add "openstack-api-site" to the affected projects.
   * the OpenStack manuals, like the Networking Guide or the Configuration
-    Reference, add "openstack-manuals" to the affected projects
+    Reference, add "openstack-manuals" to the affected projects. Tag the bug
+    for the appropriate guide, e.g. "networking-guide". Remove "neutron" from
+    the affected projects if it only affects "openstack-manuals".
   * developer documentation (devref), set the bug to "Confirmed" for
     the project Neutron, otherwise set it to "Invalid".
 

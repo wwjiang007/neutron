@@ -13,11 +13,11 @@
 # under the License.
 
 import mock
+from neutron_lib import context
 from neutron_lib.plugins import directory
 from oslo_utils import uuidutils
 
 from neutron.api.v2 import attributes as attr
-from neutron import context
 from neutron.db import api as db_api
 from neutron.db.metering import metering_rpc
 from neutron.db.models import agent as agent_model
@@ -67,7 +67,7 @@ class FakeContext(context.ContextBaseWithSession):
     @property
     def session(self):
         if self._session is None:
-            self._session = db_api.get_session()
+            self._session = db_api.get_writer_session()
         return self._session
 
 
@@ -96,7 +96,7 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
 
         self.tenant_id = 'a7e61382-47b8-4d40-bae3-f95981b5637b'
         self.ctx = FakeContext('', self.tenant_id, is_admin=True)
-        self.context_patch = mock.patch('neutron.context.Context',
+        self.context_patch = mock.patch('neutron_lib.context.Context',
                                         return_value=self.ctx)
         self.mock_context = self.context_patch.start()
 
@@ -138,6 +138,7 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
                      'name': 'router1',
                      'gw_port_id': None,
                      'admin_state_up': True,
+                     'distributed': False,
                      'tenant_id': self.tenant_id,
                      '_metering_labels': [
                          {'rules': [],
@@ -161,6 +162,7 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
                      'name': 'router1',
                      'gw_port_id': None,
                      'admin_state_up': True,
+                     'distributed': False,
                      'tenant_id': self.tenant_id,
                      '_metering_labels': [
                          {'rules': [],
@@ -184,6 +186,7 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
                      'name': 'router1',
                      'gw_port_id': None,
                      'admin_state_up': True,
+                     'distributed': False,
                      'tenant_id': self.tenant_id,
                      '_metering_labels': [
                          {'rules': [],
@@ -204,6 +207,7 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
                          'name': 'router1',
                          'gw_port_id': None,
                          'admin_state_up': True,
+                         'distributed': False,
                          'tenant_id': self.tenant_id,
                          '_metering_labels': [
                              {'rules': [],
@@ -215,6 +219,7 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
                             'name': 'router1',
                             'gw_port_id': None,
                             'admin_state_up': True,
+                            'distributed': False,
                             'tenant_id': self.tenant_id,
                             '_metering_labels': [
                                 {'rules': [],
@@ -238,6 +243,7 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
                          'name': 'router1',
                          'gw_port_id': None,
                          'admin_state_up': True,
+                         'distributed': False,
                          'tenant_id': self.tenant_id,
                          '_metering_labels': [
                              {'rule': {
@@ -253,6 +259,7 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
                          'name': 'router1',
                          'gw_port_id': None,
                          'admin_state_up': True,
+                         'distributed': False,
                          'tenant_id': self.tenant_id,
                          '_metering_labels': [
                              {'rule': {
@@ -323,7 +330,7 @@ class TestMeteringPluginL3AgentScheduler(
 
         self.tenant_id = 'a7e61382-47b8-4d40-bae3-f95981b5637b'
         self.ctx = FakeContext('', self.tenant_id, is_admin=True)
-        self.context_patch = mock.patch('neutron.context.Context',
+        self.context_patch = mock.patch('neutron_lib.context.Context',
                                         return_value=self.ctx)
         self.mock_context = self.context_patch.start()
 
@@ -351,6 +358,7 @@ class TestMeteringPluginL3AgentScheduler(
                      'name': 'router1',
                      'gw_port_id': None,
                      'admin_state_up': True,
+                     'distributed': False,
                      'tenant_id': self.tenant_id,
                      '_metering_labels': [
                          {'rules': [],
@@ -360,6 +368,7 @@ class TestMeteringPluginL3AgentScheduler(
                      'name': 'router2',
                      'gw_port_id': None,
                      'admin_state_up': True,
+                     'distributed': False,
                      'tenant_id': self.tenant_id,
                      '_metering_labels': [
                          {'rules': [],

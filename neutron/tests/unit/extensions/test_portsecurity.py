@@ -14,10 +14,10 @@
 # limitations under the License.
 
 from neutron_lib.api import validators
+from neutron_lib import context
 from neutron_lib.plugins import directory
 from webob import exc
 
-from neutron import context
 from neutron.db import _utils as db_utils
 from neutron.db import db_base_plugin_v2
 from neutron.db import portsecurity_db
@@ -44,10 +44,6 @@ class PortSecurityTestCase(
         plugin_obj = directory.get_plugin()
         self._skip_security_group = ('security-group' not in
                                      plugin_obj.supported_extension_aliases)
-
-    def tearDown(self):
-        super(PortSecurityTestCase, self).tearDown()
-        self._skip_security_group = None
 
 
 class PortSecurityTestPlugin(db_base_plugin_v2.NeutronDbPluginV2,

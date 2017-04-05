@@ -13,10 +13,10 @@
 #    under the License.
 
 import netaddr
-from oslo_serialization import jsonutils
 from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fields as obj_fields
 
+from neutron.common import constants
 from neutron.common import utils
 from neutron.db import api as db_api
 from neutron.db.models import dns as dns_models
@@ -38,19 +38,24 @@ class PortBindingBase(base.NeutronDbObject):
     @classmethod
     def modify_fields_to_db(cls, fields):
         result = super(PortBindingBase, cls).modify_fields_to_db(fields)
-        if 'vif_details' in result:
-            result['vif_details'] = (
-                cls.filter_to_json_str(result['vif_details']))
+        for field in ['profile', 'vif_details']:
+            if field in result:
+                # dump field into string, set '' if empty '{}' or None
+                result[field] = (
+                    cls.filter_to_json_str(result[field], default=''))
         return result
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
         fields = super(PortBindingBase, cls).modify_fields_from_db(db_obj)
         if 'vif_details' in fields:
-            if fields['vif_details']:
-                fields['vif_details'] = jsonutils.loads(fields['vif_details'])
-            if not fields['vif_details']:
-                fields['vif_details'] = None
+            # load string from DB into dict, set None if vif_details is ''
+            fields['vif_details'] = (
+                cls.load_json_from_str(fields['vif_details']))
+        if 'profile' in fields:
+            # load string from DB into dict, set {} if profile is ''
+            fields['profile'] = (
+                cls.load_json_from_str(fields['profile'], default={}))
         return fields
 
 
@@ -64,13 +69,15 @@ class PortBinding(PortBindingBase):
     fields = {
         'port_id': common_types.UUIDField(),
         'host': obj_fields.StringField(),
-        'profile': obj_fields.StringField(),
+        'profile': common_types.DictOfMiscValuesField(),
         'vif_type': obj_fields.StringField(),
-        'vif_details': obj_fields.DictOfStringsField(nullable=True),
+        'vif_details': common_types.DictOfMiscValuesField(nullable=True),
         'vnic_type': obj_fields.StringField(),
+        'status': common_types.PortBindingStatusEnumField(
+            default=constants.PORT_BINDING_STATUS_ACTIVE),
     }
 
-    primary_keys = ['port_id']
+    primary_keys = ['port_id', 'host']
 
 
 @obj_base.VersionedObjectRegistry.register
@@ -83,9 +90,9 @@ class DistributedPortBinding(PortBindingBase):
     fields = {
         'port_id': common_types.UUIDField(),
         'host': obj_fields.StringField(),
-        'profile': obj_fields.StringField(),
+        'profile': common_types.DictOfMiscValuesField(),
         'vif_type': obj_fields.StringField(),
-        'vif_details': obj_fields.DictOfStringsField(nullable=True),
+        'vif_details': common_types.DictOfMiscValuesField(nullable=True),
         'vnic_type': obj_fields.StringField(),
         # NOTE(ihrachys): Fields below are specific to this type of binding. In
         # the future, we could think of converging different types of bindings

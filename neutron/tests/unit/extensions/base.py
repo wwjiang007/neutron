@@ -16,10 +16,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import uuid
-
 import mock
 from oslo_config import cfg
+from oslo_utils import uuidutils
 from webob import exc
 import webtest
 
@@ -31,6 +30,9 @@ from neutron.tests import tools
 from neutron.tests.unit.api import test_extensions
 from neutron.tests.unit.api.v2 import test_base
 from neutron.tests.unit import testlib_api
+
+
+CORE_PLUGIN = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
 
 
 class ExtensionTestCase(testlib_api.WebTestCase):
@@ -56,9 +58,8 @@ class ExtensionTestCase(testlib_api.WebTestCase):
         # Create the default configurations
         self.config_parse()
 
-        # just stubbing core plugin with plugin
-        self.setup_coreplugin(plugin, load_plugins=False)
-        cfg.CONF.set_override('core_plugin', plugin)
+        core_plugin = CORE_PLUGIN if service_type else plugin
+        self.setup_coreplugin(core_plugin, load_plugins=False)
         if service_type:
             cfg.CONF.set_override('service_plugins', [plugin])
 
@@ -109,7 +110,7 @@ class ExtensionTestCase(testlib_api.WebTestCase):
 
     def _test_entity_delete(self, entity):
         """Does the entity deletion based on naming convention."""
-        entity_id = str(uuid.uuid4())
+        entity_id = uuidutils.generate_uuid()
         path = self._resource_prefix + '/' if self._resource_prefix else ''
         path += self._plural_mappings.get(entity, entity + 's')
         if self._translate_resource_name:

@@ -16,6 +16,7 @@
 import functools
 
 import eventlet
+from neutron_lib import context as n_context
 from oslo_concurrency import lockutils
 from oslo_context import context as o_context
 from oslo_log import log as logging
@@ -28,7 +29,6 @@ from neutron.api.rpc.handlers import resources_rpc
 from neutron.callbacks import events
 from neutron.callbacks import registry
 from neutron.common import utils as common_utils
-from neutron import context as n_context
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
     import constants as ovs_agent_constants
 from neutron.services.trunk import constants
@@ -108,6 +108,7 @@ def bridge_has_service_port(bridge):
     return bridge_has_port(bridge, is_trunk_service_port)
 
 
+@registry.has_registry_receivers
 class OVSDBHandler(object):
     """It listens to OVSDB events to create the physical resources associated
     to a logical trunk in response to OVSDB events (such as VM boot and/or
@@ -120,15 +121,12 @@ class OVSDBHandler(object):
         self.trunk_manager = trunk_manager
         self.trunk_rpc = agent.TrunkStub()
 
-        registry.subscribe(self.process_trunk_port_events,
-                           ovs_agent_constants.OVSDB_RESOURCE,
-                           events.AFTER_READ)
-
     @property
     def context(self):
         self._context.request_id = o_context.generate_request_id()
         return self._context
 
+    @registry.receives(ovs_agent_constants.OVSDB_RESOURCE, [events.AFTER_READ])
     def process_trunk_port_events(
             self, resource, event, trigger, ovsdb_events):
         """Process added and removed port events coming from OVSDB monitor."""
@@ -379,21 +377,29 @@ class OVSDBHandler(object):
             return
 
         # We need to remove stale subports
+        unwire_status = constants.ACTIVE_STATUS
         if rewire:
             old_subport_ids = self.get_connected_subports_for_trunk(trunk.id)
             subports = {p['port_id'] for p in trunk.sub_ports}
             subports_to_delete = set(old_subport_ids) - subports
             if subports_to_delete:
-                self.unwire_subports_for_trunk(trunk.id, subports_to_delete)
+                unwire_status = self.unwire_subports_for_trunk(
+                    trunk.id, subports_to_delete)
 
         # NOTE(status_police): inform the server whether the operation
         # was a partial or complete success. Do not inline status.
         # NOTE: in case of rewiring we readd ports that are already present on
         # the bridge because e.g. the segmentation ID might have changed (e.g.
         # agent crashed, port was removed and readded with a different seg ID)
-        status = self.wire_subports_for_trunk(
+        wire_status = self.wire_subports_for_trunk(
             ctx, trunk.id, trunk.sub_ports,
             trunk_bridge=trunk_br, parent_port=port)
+
+        if (unwire_status == wire_status and
+                wire_status == constants.ACTIVE_STATUS):
+            status = constants.ACTIVE_STATUS
+        else:
+            status = constants.DEGRADED_STATUS
         self.report_trunk_status(ctx, trunk.id, status)
 
     def _set_trunk_metadata(self, trunk_bridge, port, trunk_id, subport_ids):
@@ -465,7 +471,7 @@ class OVSDBHandler(object):
                 bridge_has_port_predicate,
                 timeout=self.timeout)
             return True
-        except eventlet.TimeoutError:
+        except common_utils.WaitTimeout:
             LOG.error(
                 _LE('No port present on trunk bridge %(br_name)s '
                     'in %(timeout)d seconds.'),

@@ -27,11 +27,14 @@ LOG = logging.getLogger(__name__)
 
 class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
 
-    def __init__(self, agent, host, *args, **kwargs):
-        super(DvrEdgeRouter, self).__init__(agent, host, *args, **kwargs)
+    def __init__(self, host, *args, **kwargs):
+        super(DvrEdgeRouter, self).__init__(host, *args, **kwargs)
         self.snat_namespace = dvr_snat_ns.SnatNamespace(
             self.router_id, self.agent_conf, self.driver, self.use_ipv6)
         self.snat_iptables_manager = None
+
+    def get_gw_ns_name(self):
+        return self.snat_namespace.name
 
     def external_gateway_added(self, ex_gw_port, interface_name):
         super(DvrEdgeRouter, self).external_gateway_added(
@@ -211,8 +214,8 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
                               "the router."), ns_name)
         super(DvrEdgeRouter, self).update_routing_table(operation, route)
 
-    def delete(self, agent):
-        super(DvrEdgeRouter, self).delete(agent)
+    def delete(self):
+        super(DvrEdgeRouter, self).delete()
         if self.snat_namespace.exists():
             self.snat_namespace.delete()
 
@@ -242,3 +245,18 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
         with self.snat_iptables_manager.defer_apply():
             self._add_address_scope_mark(
                 self.snat_iptables_manager, ports_scopemark)
+
+    def _delete_stale_external_devices(self, interface_name):
+        if not self.snat_namespace.exists():
+            return
+
+        ns_ip = ip_lib.IPWrapper(namespace=self.snat_namespace.name)
+        for d in ns_ip.get_devices(exclude_loopback=True):
+            if (d.name.startswith(router.EXTERNAL_DEV_PREFIX) and
+                    d.name != interface_name):
+                LOG.debug('Deleting stale external router device: %s', d.name)
+                self.driver.unplug(
+                    d.name,
+                    bridge=self.agent_conf.external_network_bridge,
+                    namespace=self.snat_namespace.name,
+                    prefix=router.EXTERNAL_DEV_PREFIX)

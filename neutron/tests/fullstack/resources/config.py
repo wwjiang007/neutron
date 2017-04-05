@@ -25,6 +25,8 @@ from neutron.tests.common import config_fixtures
 from neutron.tests.common.exclusive_resources import port
 from neutron.tests.common import helpers as c_helpers
 
+PHYSICAL_NETWORK_NAME = "physnet1"
+
 
 class ConfigFixture(fixtures.Fixture):
     """A fixture that holds an actual Neutron configuration.
@@ -48,6 +50,9 @@ class ConfigFixture(fixtures.Fixture):
         self.useFixture(cfg_fixture)
         self.filename = cfg_fixture.filename
 
+    def _generate_namespace_suffix(self):
+        return utils.get_rand_name(prefix='test')
+
 
 class NeutronConfigFixture(ConfigFixture):
 
@@ -56,19 +61,16 @@ class NeutronConfigFixture(ConfigFixture):
         super(NeutronConfigFixture, self).__init__(
             env_desc, host_desc, temp_dir, base_filename='neutron.conf')
 
-        service_plugins = ['router', 'trunk']
-        if env_desc.qos:
-            service_plugins.append('qos')
-
         self.config.update({
             'DEFAULT': {
                 'host': self._generate_host(),
                 'state_path': self._generate_state_path(self.temp_dir),
                 'api_paste_config': self._generate_api_paste(),
                 'core_plugin': 'ml2',
-                'service_plugins': ','.join(service_plugins),
+                'service_plugins': env_desc.service_plugins,
                 'auth_strategy': 'noauth',
                 'debug': 'True',
+                'agent_down_time': env_desc.agent_down_time,
                 'transport_url':
                     'rabbit://%(user)s:%(password)s@%(host)s:5672/%(vhost)s' %
                     {'user': rabbitmq_environment.user,
@@ -125,7 +127,7 @@ class ML2ConfigFixture(ConfigFixture):
                 'mechanism_drivers': mechanism_drivers,
             },
             'ml2_type_vlan': {
-                'network_vlan_ranges': 'physnet1:1000:2999',
+                'network_vlan_ranges': PHYSICAL_NETWORK_NAME + ':1000:2999',
             },
             'ml2_type_gre': {
                 'tunnel_id_ranges': '1:1000',
@@ -135,9 +137,10 @@ class ML2ConfigFixture(ConfigFixture):
             },
         })
 
+        extension_drivers = ['port_security']
         if env_desc.qos:
-            self.config['ml2']['extension_drivers'] =\
-                    qos_ext.QOS_EXT_DRIVER_ALIAS
+            extension_drivers.append(qos_ext.QOS_EXT_DRIVER_ALIAS)
+        self.config['ml2']['extension_drivers'] = ','.join(extension_drivers)
 
 
 class OVSConfigFixture(ConfigFixture):
@@ -187,7 +190,8 @@ class OVSConfigFixture(ConfigFixture):
         super(OVSConfigFixture, self)._setUp()
 
     def _generate_bridge_mappings(self):
-        return 'physnet1:%s' % utils.get_rand_device_name(prefix='br-eth')
+        return '%s:%s' % (PHYSICAL_NETWORK_NAME,
+                          utils.get_rand_device_name(prefix='br-eth'))
 
     def _generate_integration_bridge(self):
         return utils.get_rand_device_name(prefix='br-int')
@@ -224,6 +228,9 @@ class LinuxBridgeConfigFixture(ConfigFixture):
                 'enable_vxlan': str(self.env_desc.tunneling_enabled),
                 'local_ip': local_ip,
                 'l2_population': str(self.env_desc.l2_pop),
+            },
+            'securitygroup': {
+                'firewall_driver': host_desc.firewall_driver,
             }
         })
         if env_desc.qos:
@@ -251,7 +258,7 @@ class LinuxBridgeConfigFixture(ConfigFixture):
             })
 
     def _generate_bridge_mappings(self, device_name):
-        return 'physnet1:%s' % device_name
+        return '%s:%s' % (PHYSICAL_NETWORK_NAME, device_name)
 
 
 class L3ConfigFixture(ConfigFixture):
@@ -292,9 +299,6 @@ class L3ConfigFixture(ConfigFixture):
     def get_external_bridge(self):
         return self.config.DEFAULT.external_network_bridge
 
-    def _generate_namespace_suffix(self):
-        return utils.get_rand_name(prefix='test')
-
 
 class DhcpConfigFixture(ConfigFixture):
 
@@ -309,6 +313,7 @@ class DhcpConfigFixture(ConfigFixture):
         self.config['DEFAULT'].update({
             'debug': 'True',
             'dhcp_confs': self._generate_dhcp_path(),
+            'test_namespace_suffix': self._generate_namespace_suffix()
         })
 
     def _setUp(self):

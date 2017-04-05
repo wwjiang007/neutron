@@ -31,8 +31,7 @@ from neutron.conf.plugins.ml2.drivers import linuxbridge as \
     linuxbridge_agent_config
 from neutron.plugins.ml2.drivers.linuxbridge.agent import \
     linuxbridge_neutron_agent as linuxbridge_agent
-from neutron.plugins.ml2.drivers.openvswitch.mech_driver import \
-    mech_openvswitch as mech_ovs
+from neutron.services.qos.drivers.openvswitch import driver as ovs_drv
 
 
 load_tests = testlib_api.module_load_tests
@@ -281,6 +280,5 @@ class TestQoSWithL2Population(base.BaseFullStackTestCase):
     def test_supported_qos_rule_types(self):
         res = self.client.list_qos_rule_types()
         rule_types = {t['type'] for t in res['rule_types']}
-        expected_rules = (
-            set(mech_ovs.OpenvswitchMechanismDriver.supported_qos_rule_types))
+        expected_rules = set(ovs_drv.SUPPORTED_RULES)
         self.assertEqual(expected_rules, rule_types)

@@ -210,9 +210,9 @@ class Controller(object):
         """
         fields_to_strip = ((fields_to_strip or []) +
                            self._exclude_attributes_by_policy(context, data))
-        return self._filter_attributes(context, data, fields_to_strip)
+        return self._filter_attributes(data, fields_to_strip)
 
-    def _filter_attributes(self, context, data, fields_to_strip=None):
+    def _filter_attributes(self, data, fields_to_strip=None):
         if not fields_to_strip:
             return data
         return dict(item for item in six.iteritems(data)
@@ -329,8 +329,7 @@ class Controller(object):
             fields_to_strip += self._exclude_attributes_by_policy(
                 request.context, obj_list[0])
         collection = {self._collection:
-                      [self._filter_attributes(
-                          request.context, obj,
+                      [self._filter_attributes(obj,
                           fields_to_strip=fields_to_strip)
                        for obj in obj_list]}
         pagination_links = pagination_helper.get_links(obj_list)
@@ -404,7 +403,6 @@ class Controller(object):
                 fields_to_strip = self._exclude_attributes_by_policy(
                     request.context, item)
                 objs.append(self._filter_attributes(
-                    request.context,
                     obj_creator(request.context, **kwargs),
                     fields_to_strip=fields_to_strip))
             return objs
@@ -488,7 +486,7 @@ class Controller(object):
         def notify(create_result):
             # Ensure usage trackers for all resources affected by this API
             # operation are marked as dirty
-            with request.context.session.begin():
+            with db_api.context_manager.writer.using(request.context):
                 # Commit the reservation(s)
                 for reservation in reservations:
                     quota.QUOTAS.commit_reservation(
@@ -540,7 +538,7 @@ class Controller(object):
             fields_to_strip = self._exclude_attributes_by_policy(
                 request.context, objs[0])
             return notify({self._collection: [self._filter_attributes(
-                request.context, obj, fields_to_strip=fields_to_strip)
+                obj, fields_to_strip=fields_to_strip)
                 for obj in objs]})
         else:
             if self._collection in body:

@@ -124,7 +124,7 @@ class PolicyHook(hooks.PecanHook):
                 resources_copy.append(obj)
         # TODO(salv-orlando): as other hooks might need to prefetch resources,
         # store them in the request context. However, this should be done in a
-        # separate hook which is conventietly called before all other hooks
+        # separate hook which is conveniently called before all other hooks
         state.request.context['original_resources'] = original_resources
         for item in resources_copy:
             try:
@@ -161,11 +161,15 @@ class PolicyHook(hooks.PecanHook):
             return
         if state.request.method not in pecan_constants.ACTION_MAP:
             return
-        action = '%s_%s' % (pecan_constants.ACTION_MAP[state.request.method],
-                            resource)
         if not data or (resource not in data and collection not in data):
             return
+        policy.init()
         is_single = resource in data
+        action_type = pecan_constants.ACTION_MAP[state.request.method]
+        if action_type == 'get':
+            action = controller.plugin_handlers[controller.SHOW]
+        else:
+            action = controller.plugin_handlers[action_type]
         key = resource if is_single else collection
         to_process = [data[resource]] if is_single else data[collection]
         # in the single case, we enforce which raises on violation
@@ -180,11 +184,14 @@ class PolicyHook(hooks.PecanHook):
                         policy_method(neutron_context, action, item,
                                       plugin=plugin,
                                       pluralized=collection))]
-        except oslo_policy.PolicyNotAuthorized as e:
+        except oslo_policy.PolicyNotAuthorized:
             # This exception must be explicitly caught as the exception
             # translation hook won't be called if an error occurs in the
-            # 'after' handler.
-            raise webob.exc.HTTPForbidden(str(e))
+            # 'after' handler.  Instead of raising an HTTPForbidden exception,
+            # we have to set the status_code here to prevent the catch_errors
+            # middleware from turning this into a 500.
+            state.response.status_code = 403
+            return
 
         if is_single:
             resp = resp[0]

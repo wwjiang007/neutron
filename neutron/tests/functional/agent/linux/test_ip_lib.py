@@ -17,15 +17,16 @@ import collections
 
 import netaddr
 from neutron_lib import constants
+from neutron_lib.utils import net
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import importutils
 import testtools
 
-from neutron.agent.common import config
 from neutron.agent.linux import interface
 from neutron.agent.linux import ip_lib
 from neutron.common import utils
+from neutron.conf.agent import common as config
 from neutron.tests.common import net_helpers
 from neutron.tests.functional import base as functional_base
 
@@ -35,6 +36,7 @@ Device = collections.namedtuple('Device',
 
 WRONG_IP = '0.0.0.0'
 TEST_IP = '240.0.0.1'
+TEST_IP_NEIGH = '240.0.0.2'
 
 
 class IpLibTestFramework(functional_base.BaseSudoTestCase):
@@ -56,7 +58,7 @@ class IpLibTestFramework(functional_base.BaseSudoTestCase):
         return Device(name or utils.get_rand_name(),
                       ip_cidrs or ["%s/24" % TEST_IP],
                       mac_address or
-                      utils.get_random_mac('fa:16:3e:00:00:00'.split(':')),
+                      net.get_random_mac('fa:16:3e:00:00:00'.split(':')),
                       namespace or utils.get_rand_name())
 
     def _safe_delete_device(self, device):
@@ -226,6 +228,49 @@ class IpLibTestCase(IpLibTestFramework):
     def test_get_routing_table_no_namespace(self):
         with testtools.ExpectedException(ip_lib.NetworkNamespaceNotFound):
             ip_lib.get_routing_table(4, namespace="nonexistent-netns")
+
+    def test_get_neigh_entries(self):
+        attr = self.generate_device_details(
+            ip_cidrs=["%s/24" % TEST_IP, "fd00::1/64"]
+        )
+        mac_address = net.get_random_mac('fa:16:3e:00:00:00'.split(':'))
+        device = self.manage_device(attr)
+        device.neigh.add(TEST_IP_NEIGH, mac_address)
+
+        expected_neighs = [{'dst': TEST_IP_NEIGH,
+                            'lladdr': mac_address,
+                            'device': attr.name}]
+
+        neighs = device.neigh.dump(4)
+        self.assertItemsEqual(expected_neighs, neighs)
+        self.assertIsInstance(neighs, list)
+
+        device.neigh.delete(TEST_IP_NEIGH, mac_address)
+        neighs = device.neigh.dump(4, dst=TEST_IP_NEIGH, lladdr=mac_address)
+        self.assertEqual([], neighs)
+
+    def test_get_neigh_entries_no_namespace(self):
+        with testtools.ExpectedException(ip_lib.NetworkNamespaceNotFound):
+            ip_lib.dump_neigh_entries(4, namespace="nonexistent-netns")
+
+    def test_get_neigh_entries_no_interface(self):
+        attr = self.generate_device_details(
+            ip_cidrs=["%s/24" % TEST_IP, "fd00::1/64"]
+        )
+        self.manage_device(attr)
+        with testtools.ExpectedException(ip_lib.NetworkInterfaceNotFound):
+            ip_lib.dump_neigh_entries(4, device="nosuchdevice",
+                                      namespace=attr.namespace)
+
+    def test_delete_neigh_entries(self):
+        attr = self.generate_device_details(
+            ip_cidrs=["%s/24" % TEST_IP, "fd00::1/64"]
+        )
+        mac_address = net.get_random_mac('fa:16:3e:00:00:00'.split(':'))
+        device = self.manage_device(attr)
+
+        # trying to delete a non-existent entry shouldn't raise an error
+        device.neigh.delete(TEST_IP_NEIGH, mac_address)
 
     def _check_for_device_name(self, ip, name, should_exist):
         exist = any(d for d in ip.get_devices() if d.name == name)

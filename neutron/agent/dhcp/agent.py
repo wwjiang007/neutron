@@ -18,6 +18,7 @@ import os
 
 import eventlet
 from neutron_lib import constants
+from neutron_lib import context
 from neutron_lib import exceptions
 from oslo_concurrency import lockutils
 from oslo_config import cfg
@@ -37,7 +38,6 @@ from neutron.common import constants as n_const
 from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils
-from neutron import context
 from neutron import manager
 
 LOG = logging.getLogger(__name__)
@@ -123,7 +123,6 @@ class DhcpAgent(manager.Manager):
 
     def run(self):
         """Activate the DHCP agent."""
-        self.sync_state()
         self.periodic_resync()
         self.start_ready_ports_loop()
 
@@ -313,12 +312,14 @@ class DhcpAgent(manager.Manager):
         """Disable DHCP for a network known to the agent."""
         network = self.cache.get_network_by_id(network_id)
         if network:
-            if self.conf.enable_isolated_metadata:
-                # NOTE(jschwarz): In the case where a network is deleted, all
-                # the subnets and ports are deleted before this function is
-                # called, so checking if 'should_enable_metadata' is True
-                # for any subnet is false logic here.
-                self.disable_isolated_metadata_proxy(network)
+            # NOTE(yamahata): Kill the metadata proxy process
+            # unconditionally, as in the case where a network
+            # is deleted, all the subnets and ports are deleted
+            # before this function is called, so determining if
+            # the proxy should be terminated is error prone.
+            # destroy_monitored_metadata_proxy() is a noop when
+            # there is no process running.
+            self.disable_isolated_metadata_proxy(network)
             if self.call_driver('disable', network):
                 self.cache.remove(network)
 
@@ -405,13 +406,10 @@ class DhcpAgent(manager.Manager):
     def port_update_end(self, context, payload):
         """Handle the port.update.end notification event."""
         updated_port = dhcp.DictModel(payload['port'])
-        if self.cache.is_port_message_stale(payload['port']):
-            LOG.debug("Discarding stale port update: %s", updated_port)
-            return
-        network = self.cache.get_network_by_id(updated_port.network_id)
-        if not network:
-            return
-        with _net_lock(network.id):
+        with _net_lock(updated_port.network_id):
+            if self.cache.is_port_message_stale(payload['port']):
+                LOG.debug("Discarding stale port update: %s", updated_port)
+                return
             network = self.cache.get_network_by_id(updated_port.network_id)
             if not network:
                 return

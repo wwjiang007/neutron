@@ -14,6 +14,7 @@
 
 import collections
 
+from neutron_lib.api.definitions import portbindings
 from neutron_lib.plugins import directory
 from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
@@ -26,7 +27,6 @@ from neutron.api.rpc.callbacks import resources
 from neutron.api.rpc.handlers import resources_rpc
 from neutron.common import rpc as n_rpc
 from neutron.db import api as db_api
-from neutron.extensions import portbindings
 from neutron.objects import trunk as trunk_objects
 from neutron.services.trunk import constants as trunk_consts
 from neutron.services.trunk import exceptions as trunk_exc
@@ -104,7 +104,7 @@ class TrunkSkeleton(object):
 
     def update_trunk_status(self, context, trunk_id, status):
         """Update the trunk status to reflect outcome of data plane wiring."""
-        with db_api.autonested_transaction(context.session):
+        with db_api.context_manager.writer.using(context):
             trunk = trunk_objects.Trunk.get_object(context, id=trunk_id)
             if trunk:
                 trunk.update(status=status)

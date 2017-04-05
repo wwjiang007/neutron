@@ -18,6 +18,7 @@ import os
 import mock
 from neutron_lib.api import converters
 from neutron_lib import constants
+from neutron_lib import context
 from neutron_lib import exceptions as n_exc
 from neutron_lib.plugins import directory
 from oslo_config import cfg
@@ -36,7 +37,6 @@ from neutron.api.v2 import attributes
 from neutron.api.v2 import base as v2_base
 from neutron.api.v2 import router
 from neutron.callbacks import registry
-from neutron import context
 from neutron import policy
 from neutron import quota
 from neutron.quota import resource_registry
@@ -1195,9 +1195,6 @@ class SubresourceTest(base.BaseTestCase):
                          member=member_actions)
         self.api = webtest.TestApp(api)
 
-    def tearDown(self):
-        super(SubresourceTest, self).tearDown()
-
     def test_index_sub_resource(self):
         instance = self.plugin.return_value
 
@@ -1494,11 +1491,6 @@ class ExtensionTestCase(base.BaseTestCase):
         cfg.CONF.set_override('quota_driver', 'neutron.quota.ConfDriver',
                               group='QUOTAS')
 
-    def tearDown(self):
-        super(ExtensionTestCase, self).tearDown()
-        self.api = None
-        self.plugin = None
-
     def test_extended_create(self):
         net_id = _uuid()
         tenant_id = _uuid()
@@ -1612,6 +1604,11 @@ class FiltersTestCase(base.BaseTestCase):
         expect_val = {'foo': [4], 'bar': ['3'], 'baz': ['2'], 'qux': ['1']}
         actual_val = api_common.get_filters(request, attr_info)
         self.assertEqual(expect_val, actual_val)
+
+    def test_attr_info_with_base_db_attributes(self):
+        path = '/?__contains__=1&__class__=2'
+        request = webob.Request.blank(path)
+        self.assertEqual({}, api_common.get_filters(request, {}))
 
 
 class CreateResourceTestCase(base.BaseTestCase):

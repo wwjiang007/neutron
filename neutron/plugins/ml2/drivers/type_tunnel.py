@@ -17,9 +17,9 @@ import itertools
 import operator
 
 import netaddr
+from neutron_lib import context
 from neutron_lib import exceptions as exc
 from oslo_config import cfg
-from oslo_db import api as oslo_db_api
 from oslo_db import exception as db_exc
 from oslo_log import log
 import six
@@ -61,47 +61,47 @@ class _TunnelTypeDriverBase(helpers.SegmentTypeDriver):
     def add_endpoint(self, ip, host):
         """Register the endpoint in the type_driver database.
 
-        param ip: the IP address of the endpoint
-        param host: the Host name of the endpoint
+        :param ip: the IP address of the endpoint
+        :param host: the Host name of the endpoint
         """
 
     @abc.abstractmethod
     def get_endpoints(self):
         """Get every endpoint managed by the type_driver
 
-        :returns a list of dict [{ip_address:endpoint_ip, host:endpoint_host},
-        ..]
+        :returns: a list of dict [{ip_address:endpoint_ip, host:endpoint_host},
+         ..]
         """
 
     @abc.abstractmethod
     def get_endpoint_by_host(self, host):
         """Get endpoint for a given host managed by the type_driver
 
-        param host: the Host name of the endpoint
+        :param host: the Host name of the endpoint
 
         if host found in type_driver database
-           :returns db object for that particular host
+           :returns: db object for that particular host
         else
-           :returns None
+           :returns: None
         """
 
     @abc.abstractmethod
     def get_endpoint_by_ip(self, ip):
         """Get endpoint for a given tunnel ip managed by the type_driver
 
-        param ip: the IP address of the endpoint
+        :param ip: the IP address of the endpoint
 
         if ip found in type_driver database
-           :returns db object for that particular ip
+           :returns: db object for that particular ip
         else
-           :returns None
+           :returns: None
         """
 
     @abc.abstractmethod
     def delete_endpoint(self, ip):
         """Delete the endpoint in the type_driver database.
 
-        param ip: the IP address of the endpoint
+        :param ip: the IP address of the endpoint
         """
 
     @abc.abstractmethod
@@ -111,8 +111,8 @@ class _TunnelTypeDriverBase(helpers.SegmentTypeDriver):
         This function will delete any endpoint matching the specified
         ip or host.
 
-        param host: the host name of the endpoint
-        param ip: the IP address of the endpoint
+        :param host: the host name of the endpoint
+        :param ip: the IP address of the endpoint
         """
 
     def _initialize(self, raw_tunnel_ranges):
@@ -135,9 +135,7 @@ class _TunnelTypeDriverBase(helpers.SegmentTypeDriver):
         LOG.info(_LI("%(type)s ID ranges: %(range)s"),
                  {'type': self.get_type(), 'range': current_range})
 
-    @oslo_db_api.wrap_db_retry(
-        max_retries=db_api.MAX_RETRIES,
-        exception_checker=db_api.is_retriable)
+    @db_api.retry_db_errors
     def sync_allocations(self):
         # determine current configured allocatable tunnel ids
         tunnel_ids = set()
@@ -146,13 +144,12 @@ class _TunnelTypeDriverBase(helpers.SegmentTypeDriver):
 
         tunnel_id_getter = operator.attrgetter(self.segmentation_key)
         tunnel_col = getattr(self.model, self.segmentation_key)
-        session = db_api.get_session()
-        with session.begin(subtransactions=True):
+        ctx = context.get_admin_context()
+        with db_api.context_manager.writer.using(ctx):
             # remove from table unallocated tunnels not currently allocatable
             # fetch results as list via all() because we'll be iterating
             # through them twice
-            allocs = (session.query(self.model).
-                      with_lockmode("update").all())
+            allocs = ctx.session.query(self.model).all()
 
             # collect those vnis that needs to be deleted from db
             unallocateds = (
@@ -161,8 +158,8 @@ class _TunnelTypeDriverBase(helpers.SegmentTypeDriver):
             # Immediately delete tunnels in chunks. This leaves no work for
             # flush at the end of transaction
             for chunk in chunks(to_remove, self.BULK_SIZE):
-                session.query(self.model).filter(
-                    tunnel_col.in_(chunk)).delete(synchronize_session=False)
+                (ctx.session.query(self.model).filter(tunnel_col.in_(chunk)).
+                 filter_by(allocated=False).delete(synchronize_session=False))
 
             # collect vnis that need to be added
             existings = {tunnel_id_getter(a) for a in allocs}
@@ -170,7 +167,7 @@ class _TunnelTypeDriverBase(helpers.SegmentTypeDriver):
             for chunk in chunks(missings, self.BULK_SIZE):
                 bulk = [{self.segmentation_key: x, 'allocated': False}
                         for x in chunk]
-                session.execute(self.model.__table__.insert(), bulk)
+                ctx.session.execute(self.model.__table__.insert(), bulk)
 
     def is_partial_segment(self, segment):
         return segment.get(api.SEGMENTATION_ID) is None
@@ -346,40 +343,37 @@ class EndpointTunnelTypeDriver(ML2TunnelTypeDriver):
 
     def get_endpoint_by_host(self, host):
         LOG.debug("get_endpoint_by_host() called for host %s", host)
-        session = db_api.get_session()
+        session = db_api.get_reader_session()
         return (session.query(self.endpoint_model).
                 filter_by(host=host).first())
 
     def get_endpoint_by_ip(self, ip):
         LOG.debug("get_endpoint_by_ip() called for ip %s", ip)
-        session = db_api.get_session()
+        session = db_api.get_reader_session()
         return (session.query(self.endpoint_model).
                 filter_by(ip_address=ip).first())
 
     def delete_endpoint(self, ip):
         LOG.debug("delete_endpoint() called for ip %s", ip)
-        session = db_api.get_session()
-        with session.begin(subtransactions=True):
-            (session.query(self.endpoint_model).
-             filter_by(ip_address=ip).delete())
+        session = db_api.get_writer_session()
+        session.query(self.endpoint_model).filter_by(ip_address=ip).delete()
 
     def delete_endpoint_by_host_or_ip(self, host, ip):
         LOG.debug("delete_endpoint_by_host_or_ip() called for "
                   "host %(host)s or %(ip)s", {'host': host, 'ip': ip})
-        session = db_api.get_session()
-        with session.begin(subtransactions=True):
-            session.query(self.endpoint_model).filter(
-                    or_(self.endpoint_model.host == host,
-                        self.endpoint_model.ip_address == ip)).delete()
+        session = db_api.get_writer_session()
+        session.query(self.endpoint_model).filter(
+            or_(self.endpoint_model.host == host,
+                self.endpoint_model.ip_address == ip)).delete()
 
     def _get_endpoints(self):
         LOG.debug("_get_endpoints() called")
-        session = db_api.get_session()
+        session = db_api.get_reader_session()
         return session.query(self.endpoint_model)
 
     def _add_endpoint(self, ip, host, **kwargs):
         LOG.debug("_add_endpoint() called for ip %s", ip)
-        session = db_api.get_session()
+        session = db_api.get_writer_session()
         try:
             endpoint = self.endpoint_model(ip_address=ip, host=host, **kwargs)
             endpoint.save(session)

@@ -16,6 +16,7 @@
 import os
 import re
 
+from debtcollector import removals
 import eventlet
 import netaddr
 from neutron_lib import constants
@@ -282,6 +283,10 @@ class IPDevice(SubProcessBase):
     def __str__(self):
         return self.name
 
+    def __repr__(self):
+        return "<IPDevice(name=%s, namespace=%s)>" % (self._name,
+                                                      self.namespace)
+
     def exists(self):
         """Return True if the device exists in the namespace."""
         # we must save and restore this before returning
@@ -463,9 +468,12 @@ class IpRuleCommand(IpCommandBase):
         return tuple(args)
 
     def add(self, ip, **kwargs):
-        ip_version = get_ip_version(ip)
+        ip_version = common_utils.get_ip_version(ip)
 
-        kwargs.update({'from': ip})
+        # In case if we need to add in a rule based on incoming
+        # interface we don't need to pass in the ip.
+        if not kwargs.get('iif'):
+            kwargs.update({'from': ip})
         canonical_kwargs = self._make_canonical(ip_version, kwargs)
 
         if not self._exists(ip_version, **canonical_kwargs):
@@ -473,7 +481,7 @@ class IpRuleCommand(IpCommandBase):
             self._as_root([ip_version], args_tuple)
 
     def delete(self, ip, **kwargs):
-        ip_version = get_ip_version(ip)
+        ip_version = common_utils.get_ip_version(ip)
 
         # TODO(Carl) ip ignored in delete, okay in general?
 
@@ -575,7 +583,7 @@ class IpAddrCommand(IpDeviceCommandBase):
         self._as_root([net.version], tuple(args))
 
     def delete(self, cidr):
-        ip_version = get_ip_version(cidr)
+        ip_version = common_utils.get_ip_version(cidr)
         self._as_root([ip_version],
                       ('del', cidr,
                        'dev', self.name))
@@ -682,7 +690,7 @@ class IpRouteCommand(IpDeviceCommandBase):
         return ['dev', self.name] if self.name else []
 
     def add_gateway(self, gateway, metric=None, table=None):
-        ip_version = get_ip_version(gateway)
+        ip_version = common_utils.get_ip_version(gateway)
         args = ['replace', 'default', 'via', gateway]
         if metric:
             args += ['metric', metric]
@@ -700,7 +708,7 @@ class IpRouteCommand(IpDeviceCommandBase):
                     raise exceptions.DeviceNotFoundError(device_name=self.name)
 
     def delete_gateway(self, gateway, table=None):
-        ip_version = get_ip_version(gateway)
+        ip_version = common_utils.get_ip_version(gateway)
         args = ['del', 'default',
                 'via', gateway]
         args += self._dev_args()
@@ -786,7 +794,7 @@ class IpRouteCommand(IpDeviceCommandBase):
         self._as_root([ip_version], tuple(args))
 
     def add_route(self, cidr, via=None, table=None, **kwargs):
-        ip_version = get_ip_version(cidr)
+        ip_version = common_utils.get_ip_version(cidr)
         args = ['replace', cidr]
         if via:
             args += ['via', via]
@@ -797,7 +805,7 @@ class IpRouteCommand(IpDeviceCommandBase):
         self._run_as_root_detect_device_not_found([ip_version], tuple(args))
 
     def delete_route(self, cidr, via=None, table=None, **kwargs):
-        ip_version = get_ip_version(cidr)
+        ip_version = common_utils.get_ip_version(cidr)
         args = ['del', cidr]
         if via:
             args += ['via', via]
@@ -818,21 +826,29 @@ class IPRoute(SubProcessBase):
 class IpNeighCommand(IpDeviceCommandBase):
     COMMAND = 'neigh'
 
-    def add(self, ip_address, mac_address):
-        ip_version = get_ip_version(ip_address)
-        self._as_root([ip_version],
-                      ('replace', ip_address,
-                       'lladdr', mac_address,
-                       'nud', 'permanent',
-                       'dev', self.name))
+    def add(self, ip_address, mac_address, **kwargs):
+        add_neigh_entry(ip_address,
+                        mac_address,
+                        self.name,
+                        self._parent.namespace,
+                        **kwargs)
 
-    def delete(self, ip_address, mac_address):
-        ip_version = get_ip_version(ip_address)
-        self._as_root([ip_version],
-                      ('del', ip_address,
-                       'lladdr', mac_address,
-                       'dev', self.name))
+    def delete(self, ip_address, mac_address, **kwargs):
+        delete_neigh_entry(ip_address,
+                           mac_address,
+                           self.name,
+                           self._parent.namespace,
+                           **kwargs)
 
+    def dump(self, ip_version, **kwargs):
+        return dump_neigh_entries(ip_version,
+                                  self.name,
+                                  self._parent.namespace,
+                                  **kwargs)
+
+    @removals.remove(
+        version='Ocata', removal_version='Pike',
+        message="Use 'dump' in IpNeighCommand() class instead")
     def show(self, ip_version):
         options = [ip_version]
         return self._as_root(options,
@@ -848,6 +864,7 @@ class IpNeighCommand(IpDeviceCommandBase):
         :param ip_version: Either 4 or 6 for IPv4 or IPv6 respectively
         :param ip_address: The prefix selecting the neighbours to flush
         """
+        # NOTE(haleyb): There is no equivalent to 'flush' in pyroute2
         self._as_root([ip_version], ('flush', 'to', ip_address))
 
 
@@ -937,6 +954,7 @@ def get_device_mac(device_name, namespace=None):
 
 
 NetworkNamespaceNotFound = privileged.NetworkNamespaceNotFound
+NetworkInterfaceNotFound = privileged.NetworkInterfaceNotFound
 
 
 def get_routing_table(ip_version, namespace=None):
@@ -952,6 +970,61 @@ def get_routing_table(ip_version, namespace=None):
     """
     # oslo.privsep turns lists to tuples in its IPC code. Change it back
     return list(privileged.get_routing_table(ip_version, namespace))
+
+
+# NOTE(haleyb): These neighbour functions live outside the IpNeighCommand
+# class since not all callers require it.
+def add_neigh_entry(ip_address, mac_address, device, namespace=None, **kwargs):
+    """Add a neighbour entry.
+
+    :param ip_address: IP address of entry to add
+    :param mac_address: MAC address of entry to add
+    :param device: Device name to use in adding entry
+    :param namespace: The name of the namespace in which to add the entry
+    """
+    ip_version = common_utils.get_ip_version(ip_address)
+    privileged.add_neigh_entry(ip_version,
+                               ip_address,
+                               mac_address,
+                               device,
+                               namespace,
+                               **kwargs)
+
+
+def delete_neigh_entry(ip_address, mac_address, device, namespace=None,
+                       **kwargs):
+    """Delete a neighbour entry.
+
+    :param ip_address: IP address of entry to delete
+    :param mac_address: MAC address of entry to delete
+    :param device: Device name to use in deleting entry
+    :param namespace: The name of the namespace in which to delete the entry
+    """
+    ip_version = common_utils.get_ip_version(ip_address)
+    privileged.delete_neigh_entry(ip_version,
+                                  ip_address,
+                                  mac_address,
+                                  device,
+                                  namespace,
+                                  **kwargs)
+
+
+def dump_neigh_entries(ip_version, device=None, namespace=None, **kwargs):
+    """Dump all neighbour entries.
+
+    :param ip_version: IP version of entries to show (4 or 6)
+    :param device: Device name to use in dumping entries
+    :param namespace: The name of the namespace in which to dump the entries
+    :param kwargs: Callers add any filters they use as kwargs
+    :return: a list of dictionaries, each representing a neighbour.
+    The dictionary format is: {'dst': ip_address,
+                               'lladdr': mac_address,
+                               'device': device_name}
+    """
+    return list(privileged.dump_neigh_entries(ip_version,
+                                              device,
+                                              namespace,
+                                              **kwargs))
 
 
 def ensure_device_is_ready(device_name, namespace=None):
@@ -1065,8 +1138,12 @@ def add_namespace_to_cmd(cmd, namespace=None):
     return ['ip', 'netns', 'exec', namespace] + cmd if namespace else cmd
 
 
+@removals.remove(
+    message="This will be removed in the future. "
+            "Please use 'neutron.common.utils.get_ip_version' instead.",
+    version='Pike', removal_version='Queens')
 def get_ip_version(ip_or_cidr):
-    return netaddr.IPNetwork(ip_or_cidr).version
+    return common_utils.get_ip_version(ip_or_cidr)
 
 
 def get_ipv6_lladdr(mac_addr):

@@ -26,8 +26,8 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
        DVR router with HA capabilities.
     """
 
-    def __init__(self, agent, host, *args, **kwargs):
-        super(DvrEdgeHaRouter, self).__init__(agent, host,
+    def __init__(self, host, *args, **kwargs):
+        super(DvrEdgeHaRouter, self).__init__(host,
                                               *args, **kwargs)
         self.enable_snat = None
 
@@ -88,9 +88,6 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
     def initialize(self, process_monitor):
         self._create_snat_namespace()
         super(DvrEdgeHaRouter, self).initialize(process_monitor)
-
-    def get_router_cidrs(self, device):
-        return router_info.RouterInfo.get_router_cidrs(self, device)
 
     def _external_gateway_added(self, ex_gw_port, interface_name,
                                 ns_name, preserve_ips):

@@ -34,13 +34,20 @@ class EnvironmentDescription(object):
     Does the setup, as a whole, support tunneling? How about l2pop?
     """
     def __init__(self, network_type='vxlan', l2_pop=True, qos=False,
-                 mech_drivers='openvswitch,linuxbridge', arp_responder=False):
+                 mech_drivers='openvswitch,linuxbridge',
+                 service_plugins='router,trunk', arp_responder=False,
+                 agent_down_time=75):
         self.network_type = network_type
         self.l2_pop = l2_pop
         self.qos = qos
         self.network_range = None
         self.mech_drivers = mech_drivers
         self.arp_responder = arp_responder
+        self.agent_down_time = agent_down_time
+
+        self.service_plugins = service_plugins
+        if self.qos:
+            self.service_plugins += ',qos'
 
     @property
     def tunneling_enabled(self):
@@ -294,6 +301,13 @@ class Host(fixtures.Fixture):
     @linuxbridge_agent.setter
     def linuxbridge_agent(self, agent):
         self.agents['linuxbridge'] = agent
+
+    @property
+    def l2_agent(self):
+        if self.host_desc.l2_agent_type == constants.AGENT_TYPE_LINUXBRIDGE:
+            return self.linuxbridge_agent
+        elif self.host_desc.l2_agent_type == constants.AGENT_TYPE_OVS:
+            return self.ovs_agent
 
 
 class Environment(fixtures.Fixture):

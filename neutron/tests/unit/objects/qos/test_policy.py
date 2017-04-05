@@ -71,8 +71,8 @@ class QosPolicyObjectTestCase(test_base.BaseObjectIfaceTestCase):
         self.get_objects_mock.assert_any_call(
             admin_context, self._test_class.db_model, _pager=None)
         self.assertItemsEqual(
-            [test_base.get_obj_db_fields(obj) for obj in self.objs],
-            [test_base.get_obj_db_fields(obj) for obj in objs])
+            [test_base.get_obj_persistent_fields(obj) for obj in self.objs],
+            [test_base.get_obj_persistent_fields(obj) for obj in objs])
 
     def test_get_objects_valid_fields(self):
         admin_context = self.context.elevated()
@@ -417,6 +417,13 @@ class QosPolicyDbObjectTestCase(test_base.BaseDbObjectTestCase,
         self.assertIn(rule_objs[0], policy_obj_v1_1.rules)
         self.assertIn(rule_objs[1], policy_obj_v1_1.rules)
         self.assertNotIn(rule_objs[2], policy_obj_v1_1.rules)
+
+    def test_v1_4_to_v1_3_drops_project_id(self):
+        policy_new = self._create_test_policy()
+
+        policy_v1_3 = policy_new.obj_to_primitive(target_version='1.3')
+        self.assertNotIn('project_id', policy_v1_3['versioned_object.data'])
+        self.assertIn('tenant_id', policy_v1_3['versioned_object.data'])
 
     def test_filter_by_shared(self):
         policy_obj = policy.QosPolicy(

@@ -19,17 +19,15 @@ import netaddr
 from neutron_lib import constants
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_log import versionutils
 from oslo_utils import netutils
 import six
 
-from neutron._i18n import _, _LI, _LW
+from neutron._i18n import _LI
 from neutron.agent import firewall
 from neutron.agent.linux import ip_conntrack
 from neutron.agent.linux import ipset_manager
 from neutron.agent.linux import iptables_comments as ic
 from neutron.agent.linux import iptables_manager
-from neutron.agent.linux import utils
 from neutron.common import constants as n_const
 from neutron.common import ipv6_utils
 from neutron.common import utils as c_utils
@@ -61,7 +59,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
                           firewall.EGRESS_DIRECTION: 'physdev-in'}
 
     def __init__(self, namespace=None):
-        self.iptables = iptables_manager.IptablesManager(
+        self.iptables = iptables_manager.IptablesManager(state_less=True,
             use_ipv6=ipv6_utils.is_enabled_and_bind_by_default(),
             namespace=namespace)
         # TODO(majopela, shihanzhang): refactor out ipset to a separate
@@ -85,42 +83,9 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
             lambda: collections.defaultdict(list))
         self.pre_sg_members = None
         self.enable_ipset = cfg.CONF.SECURITYGROUP.enable_ipset
-        self._enabled_netfilter_for_bridges = False
         self.updated_rule_sg_ids = set()
         self.updated_sg_members = set()
         self.devices_with_updated_sg_members = collections.defaultdict(list)
-
-    def _enable_netfilter_for_bridges(self):
-        # we only need to set these values once, but it has to be when
-        # we create a bridge; before that the bridge module might not
-        # be loaded and the proc values aren't there.
-        if self._enabled_netfilter_for_bridges:
-            return
-        else:
-            self._enabled_netfilter_for_bridges = True
-
-        # These proc values ensure that netfilter is enabled on
-        # bridges; essential for enforcing security groups rules with
-        # OVS Hybrid.  Distributions can differ on whether this is
-        # enabled by default or not (Ubuntu - yes, Redhat - no, for
-        # example).
-        LOG.debug("Enabling netfilter for bridges")
-        entries = utils.execute(['sysctl', '-N', 'net.bridge'],
-                                run_as_root=True).splitlines()
-        for proto in ('arp', 'ip', 'ip6'):
-            knob = 'net.bridge.bridge-nf-call-%stables' % proto
-            if 'net.bridge.bridge-nf-call-%stables' % proto not in entries:
-                raise SystemExit(
-                    _("sysctl value %s not present on this system.") % knob)
-            enabled = utils.execute(['sysctl', '-b', knob])
-            if enabled != '1':
-                versionutils.report_deprecated_feature(
-                    LOG,
-                    _LW('Bridge firewalling is disabled; enabling to make '
-                        'iptables firewall work. This may not work in future '
-                        'releases.'))
-                utils.execute(
-                    ['sysctl', '-w', '%s=1' % knob], run_as_root=True)
 
     @property
     def ports(self):
@@ -186,9 +151,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
 
     def prepare_port_filter(self, port):
         LOG.debug("Preparing device (%s) filter", port['device'])
-        self._remove_chains()
         self._set_ports(port)
-        self._enable_netfilter_for_bridges()
         # each security group has it own chains
         self._setup_chains()
         return self.iptables.apply()
@@ -325,9 +288,6 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
             self._remove_rule_from_chain_v4v6('FORWARD', jump_rule, jump_rule)
 
         if direction == firewall.EGRESS_DIRECTION:
-            jump_rule = ['-m physdev --%s %s --physdev-is-bridged '
-                         '-j ACCEPT' % (self.IPTABLES_DIRECTION[direction],
-                                        device)]
             if add:
                 self._add_rules_to_chain_v4v6('INPUT', jump_rule, jump_rule,
                                               comment=ic.PORT_SEC_ACCEPT)
@@ -462,16 +422,16 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         ipv6_rules += [comment_rule('-p ipv6-icmp -j RETURN',
                                     comment=ic.IPV6_ICMP_ALLOW)]
         ipv6_rules += [comment_rule('-p udp -m udp --sport 546 '
-                                    '-m udp --dport 547 '
+                                    '--dport 547 '
                                     '-j RETURN', comment=ic.DHCP_CLIENT)]
 
     def _drop_dhcp_rule(self, ipv4_rules, ipv6_rules):
         #Note(nati) Drop dhcp packet from VM
         ipv4_rules += [comment_rule('-p udp -m udp --sport 67 '
-                                    '-m udp --dport 68 '
+                                    '--dport 68 '
                                     '-j DROP', comment=ic.DHCP_SPOOF)]
         ipv6_rules += [comment_rule('-p udp -m udp --sport 547 '
-                                    '-m udp --dport 546 '
+                                    '--dport 546 '
                                     '-j DROP', comment=ic.DHCP_SPOOF)]
 
     def _accept_inbound_icmpv6(self):
@@ -578,7 +538,9 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         return args
 
     def _generate_protocol_and_port_args(self, sg_rule):
-        args = self._protocol_arg(sg_rule.get('protocol'))
+        is_port = (sg_rule.get('source_port_range_min') is not None or
+                   sg_rule.get('port_range_min') is not None)
+        args = self._protocol_arg(sg_rule.get('protocol'), is_port)
         args += self._port_arg('sport',
                                sg_rule.get('protocol'),
                                sg_rule.get('source_port_range_min'),
@@ -640,23 +602,22 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
             comment=ic.ALLOW_ASSOC)]
         return iptables_rules
 
-    def _protocol_arg(self, protocol):
+    def _protocol_arg(self, protocol, is_port):
         if not protocol:
             return []
         if protocol == 'icmpv6':
             protocol = 'ipv6-icmp'
         iptables_rule = ['-p', protocol]
+
+        if (is_port and protocol in n_const.IPTABLES_PROTOCOL_MAP):
+            # iptables adds '-m protocol' when the port number is specified
+            iptables_rule += ['-m', n_const.IPTABLES_PROTOCOL_MAP[protocol]]
         return iptables_rule
 
     def _port_arg(self, direction, protocol, port_range_min, port_range_max):
-        if (protocol not in ['udp', 'tcp', 'icmp', 'ipv6-icmp']
-            or port_range_min is None):
-            return []
-
-        protocol_modules = {'udp': 'udp', 'tcp': 'tcp',
-                            'icmp': 'icmp', 'ipv6-icmp': 'icmp6'}
-        # iptables adds '-m protocol' when the port number is specified
-        args = ['-m', protocol_modules[protocol]]
+        args = []
+        if port_range_min is None:
+            return args
 
         if protocol in ['icmp', 'ipv6-icmp']:
             protocol_type = 'icmpv6' if protocol == 'ipv6-icmp' else 'icmp'
@@ -866,7 +827,6 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
 
 
 class OVSHybridIptablesFirewallDriver(IptablesFirewallDriver):
-    OVS_HYBRID_TAP_PREFIX = constants.TAP_DEVICE_PREFIX
     OVS_HYBRID_PLUG_REQUIRED = True
 
     def _port_chain_name(self, port, direction):

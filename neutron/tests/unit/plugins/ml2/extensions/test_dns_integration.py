@@ -13,18 +13,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import uuid
-
 from keystoneauth1 import loading
+from keystoneauth1 import session
 import mock
 import netaddr
+from neutron_lib.api.definitions import provider_net as pnet
 from neutron_lib import constants
+from neutron_lib import context
 from neutron_lib.plugins import directory
+from oslo_utils import uuidutils
 import testtools
 
-from neutron import context
 from neutron.extensions import dns
-from neutron.extensions import providernet as pnet
 from neutron.objects import ports as port_obj
 from neutron.plugins.ml2 import config
 from neutron.plugins.ml2.extensions import dns_integration
@@ -532,15 +532,15 @@ class TestDesignateClientKeystoneV2(testtools.TestCase):
     """Test case for designate clients """
 
     TEST_URL = 'http://127.0.0.1:9001/v2'
-    TEST_ADMIN_USERNAME = uuid.uuid4().hex
-    TEST_ADMIN_PASSWORD = uuid.uuid4().hex
-    TEST_ADMIN_TENANT_NAME = uuid.uuid4().hex
-    TEST_ADMIN_TENANT_ID = uuid.uuid4().hex
+    TEST_ADMIN_USERNAME = uuidutils.generate_uuid(dashed=False)
+    TEST_ADMIN_PASSWORD = uuidutils.generate_uuid(dashed=False)
+    TEST_ADMIN_TENANT_NAME = uuidutils.generate_uuid(dashed=False)
+    TEST_ADMIN_TENANT_ID = uuidutils.generate_uuid(dashed=False)
     TEST_ADMIN_AUTH_URL = 'http://127.0.0.1:35357/v2.0'
-    TEST_CA_CERT = uuid.uuid4().hex
+    TEST_CA_CERT = uuidutils.generate_uuid(dashed=False)
 
     TEST_CONTEXT = mock.Mock()
-    TEST_CONTEXT.auth_token = uuid.uuid4().hex
+    TEST_CONTEXT.auth_token = uuidutils.generate_uuid(dashed=False)
 
     def setUp(self):
         super(TestDesignateClientKeystoneV2, self).setUp()
@@ -566,7 +566,7 @@ class TestDesignateClientKeystoneV2(testtools.TestCase):
         # enforce session recalculation
         mock.patch.object(driver, '_SESSION', new=None).start()
         self.driver_session = (
-            mock.patch.object(driver.session, 'Session').start())
+            mock.patch.object(session, 'Session').start())
         self.load_auth = (
             mock.patch.object(driver.loading,
                 'load_auth_from_conf_options').start())
@@ -578,17 +578,21 @@ class TestDesignateClientKeystoneV2(testtools.TestCase):
                                      True,
                                      group='designate')
         driver.get_clients(self.TEST_CONTEXT)
-        self.driver_session.assert_called_with(verify=False)
+        self.driver_session.assert_called_with(cert=None,
+                                               timeout=None,
+                                               verify=False)
 
     def test_secure_client(self):
         config.cfg.CONF.set_override('insecure',
                                      False,
                                      group='designate')
-        config.cfg.CONF.set_override('ca_cert',
+        config.cfg.CONF.set_override('cafile',
                                      self.TEST_CA_CERT,
                                      group='designate')
         driver.get_clients(self.TEST_CONTEXT)
-        self.driver_session.assert_called_with(verify=self.TEST_CA_CERT)
+        self.driver_session.assert_called_with(cert=None,
+                                               timeout=None,
+                                               verify=self.TEST_CA_CERT)
 
     def test_auth_type_not_defined(self):
         driver.get_clients(self.TEST_CONTEXT)
@@ -605,24 +609,27 @@ class TestDesignateClientKeystoneV3(testtools.TestCase):
     """Test case for designate clients """
 
     TEST_URL = 'http://127.0.0.1:9001/v2'
-    TEST_ADMIN_USERNAME = uuid.uuid4().hex
-    TEST_ADMIN_PASSWORD = uuid.uuid4().hex
+    TEST_ADMIN_USERNAME = uuidutils.generate_uuid(dashed=False)
+    TEST_ADMIN_PASSWORD = uuidutils.generate_uuid(dashed=False)
     TEST_ADMIN_USER_DOMAIN_ID = 'Default'
-    TEST_ADMIN_PROJECT_ID = uuid.uuid4().hex
+    TEST_ADMIN_PROJECT_ID = uuidutils.generate_uuid(dashed=False)
     TEST_ADMIN_PROJECT_DOMAIN_ID = 'Default'
     TEST_ADMIN_AUTH_URL = 'http://127.0.0.1:35357/v3'
-    TEST_CA_CERT = uuid.uuid4().hex
+    TEST_CA_CERT = uuidutils.generate_uuid(dashed=False)
 
     TEST_CONTEXT = mock.Mock()
-    TEST_CONTEXT.auth_token = uuid.uuid4().hex
+    TEST_CONTEXT.auth_token = uuidutils.generate_uuid(dashed=False)
 
     def setUp(self):
         super(TestDesignateClientKeystoneV3, self).setUp()
         # Register the Password auth plugin options,
         # so we can use CONF.set_override
-        config.cfg.CONF.register_opts(
-            loading.get_auth_plugin_conf_options('password'),
-            group='designate')
+        password_option = loading.get_auth_plugin_conf_options('password')
+        config.cfg.CONF.register_opts(password_option, group='designate')
+        self.addCleanup(
+            config.cfg.CONF.unregister_opts,
+            password_option, group='designate')
+
         config.cfg.CONF.set_override('url',
                                      self.TEST_URL,
                                      group='designate')
@@ -648,35 +655,33 @@ class TestDesignateClientKeystoneV3(testtools.TestCase):
         # enforce session recalculation
         mock.patch.object(driver, '_SESSION', new=None).start()
         self.driver_session = (
-            mock.patch.object(driver.session, 'Session').start())
+            mock.patch.object(session, 'Session').start())
         self.load_auth = (
             mock.patch.object(driver.loading,
                 'load_auth_from_conf_options').start())
         self.password = (
             mock.patch.object(driver.password, 'Password').start())
 
-    def tearDown(self):
-        super(TestDesignateClientKeystoneV3, self).tearDown()
-        config.cfg.CONF.unregister_opts(
-            loading.get_auth_plugin_conf_options('password'),
-            group='designate')
-
     def test_insecure_client(self):
         config.cfg.CONF.set_override('insecure',
                                      True,
                                      group='designate')
         driver.get_clients(self.TEST_CONTEXT)
-        self.driver_session.assert_called_with(verify=False)
+        self.driver_session.assert_called_with(cert=None,
+                                               timeout=None,
+                                               verify=False)
 
     def test_secure_client(self):
         config.cfg.CONF.set_override('insecure',
                                      False,
                                      group='designate')
-        config.cfg.CONF.set_override('ca_cert',
+        config.cfg.CONF.set_override('cafile',
                                      self.TEST_CA_CERT,
                                      group='designate')
         driver.get_clients(self.TEST_CONTEXT)
-        self.driver_session.assert_called_with(verify=self.TEST_CA_CERT)
+        self.driver_session.assert_called_with(cert=None,
+                                               timeout=None,
+                                               verify=self.TEST_CA_CERT)
 
     def test_auth_type_password(self):
         driver.get_clients(self.TEST_CONTEXT)

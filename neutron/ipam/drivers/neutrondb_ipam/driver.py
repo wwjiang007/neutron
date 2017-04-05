@@ -155,7 +155,7 @@ class NeutronDbSubnet(ipam_base.Subnet):
         """Generate an IP address from the set of available addresses."""
         ip_allocations = netaddr.IPSet()
         for ipallocation in self.subnet_manager.list_allocations(context):
-            ip_allocations.add(netaddr.IPAddress(ipallocation.ip_address))
+            ip_allocations.add(ipallocation.ip_address)
 
         for ip_pool in self.subnet_manager.list_pools(context):
             ip_set = netaddr.IPSet()
@@ -201,6 +201,8 @@ class NeutronDbSubnet(ipam_base.Subnet):
         # The only defined status at this stage is 'ALLOCATED'.
         # More states will be available in the future - e.g.: RECYCLABLE
         try:
+            # TODO(ataraday): revisit this after objects switched to
+            # new enginefacade
             with self._context.session.begin(subtransactions=True):
                 # NOTE(kevinbenton): we use a subtransaction to force
                 # a flush here so we can capture DBReferenceErrors due
