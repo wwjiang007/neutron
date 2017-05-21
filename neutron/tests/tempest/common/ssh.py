@@ -1,3 +1,5 @@
+# All Rights Reserved.
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -9,18 +11,14 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-from oslo_config import cfg
 
-from neutron._i18n import _
+from tempest.lib.common import ssh
 
-QOS_PLUGIN_OPTS = [
-    cfg.ListOpt('notification_drivers',
-                default=['message_queue'],
-                help=_("Drivers list to use to send the update notification. "
-                       "This option will be unused in Pike."),
-                deprecated_for_removal=True),
-]
+from neutron.tests.tempest import config
 
 
-def register_qos_plugin_opts(cfg=cfg.CONF):
-    cfg.register_opts(QOS_PLUGIN_OPTS, "qos")
+class Client(ssh.Client):
+    def __init__(self, *args, **kwargs):
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = config.CONF.validation.ssh_timeout
+        super(Client, self).__init__(*args, **kwargs)

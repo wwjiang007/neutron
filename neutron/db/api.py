@@ -278,12 +278,19 @@ def load_one_to_manys(session):
     # have eliminated all places where related objects are constructed
     # using a key rather than a relationship.
 
-    add_to_rel_load_list(session)  # capture any new objects
+    # capture any new objects
+    if session.new:
+        session.flush()
+
     if session.transaction.nested:
         # wait until final commit
         return
 
     for new_object in session.info.pop('_load_rels', []):
+        if new_object not in session:
+            # don't load detached objects because that brings them back into
+            # session
+            continue
         state = sqlalchemy.inspect(new_object)
 
         # set up relationship loading so that we can call lazy

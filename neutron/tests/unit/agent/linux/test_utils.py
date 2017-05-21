@@ -19,6 +19,7 @@ import mock
 import six
 import testtools
 
+from oslo_config import cfg
 import oslo_i18n
 
 from neutron.agent.linux import utils
@@ -60,6 +61,17 @@ class AgentUtilsExecuteTest(base.BaseTestCase):
         self.config(group='AGENT', root_helper='echo')
         result = utils.execute(["ls", self.test_file], run_as_root=True)
         self.assertEqual(result, expected)
+
+    @mock.patch.object(utils.RootwrapDaemonHelper, 'get_client')
+    def test_with_helper_exception(self, get_client):
+        client_inst = mock.Mock()
+        client_inst.execute.side_effect = RuntimeError
+        get_client.return_value = client_inst
+        self.config(group='AGENT', root_helper_daemon='echo')
+        with mock.patch.object(utils, 'LOG') as log:
+            self.assertRaises(RuntimeError, utils.execute,
+                              ['ls'], run_as_root=True)
+            self.assertTrue(log.error.called)
 
     def test_stderr_true(self):
         expected = "%s\n" % self.test_file
@@ -510,6 +522,7 @@ class TestUnixDomainWSGIServer(base.BaseTestCase):
             'app',
             protocol=utils.UnixDomainHttpProtocol,
             log=mock.ANY,
+            log_format=cfg.CONF.wsgi_log_format,
             max_size=self.server.num_threads
         )
 
@@ -524,5 +537,6 @@ class TestUnixDomainWSGIServer(base.BaseTestCase):
             'app',
             protocol=utils.UnixDomainHttpProtocol,
             log=mock.ANY,
+            log_format=cfg.CONF.wsgi_log_format,
             max_size=num_threads
         )

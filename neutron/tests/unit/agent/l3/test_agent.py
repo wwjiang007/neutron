@@ -28,7 +28,6 @@ from oslo_log import log
 import oslo_messaging
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
-import six
 from testtools import matchers
 
 from neutron.agent.l3 import agent as l3_agent
@@ -36,6 +35,7 @@ from neutron.agent.l3 import dvr_edge_router as dvr_router
 from neutron.agent.l3 import dvr_snat_ns
 from neutron.agent.l3 import legacy_router
 from neutron.agent.l3 import link_local_allocator as lla
+from neutron.agent.l3 import namespace_manager
 from neutron.agent.l3 import namespaces
 from neutron.agent.l3 import router_info as l3router
 from neutron.agent.l3 import router_processing_queue
@@ -82,7 +82,6 @@ class BasicRouterOperationsFramework(base.BaseTestCase):
         self.conf.register_opts(ra.OPTS)
         self.conf.set_override('interface_driver',
                                'neutron.agent.linux.interface.NullDriver')
-        self.conf.set_override('send_arp_for_ha', 1)
         self.conf.set_override('state_path', cfg.CONF.state_path)
         self.conf.set_override('pd_dhcp_driver', '')
 
@@ -322,6 +321,28 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         agent.periodic_sync_routers_task(agent.context)
         self.assertFalse(agent.namespaces_manager._clean_stale)
 
+    def test_periodic_sync_routers_task_call_ensure_snat_cleanup(self):
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        agent.conf.agent_mode = 'dvr_snat'
+        dvr_ha_router = {'id': _uuid(),
+                      'external_gateway_info': {},
+                      'routes': [],
+                      'distributed': True,
+                      'ha': True}
+        dvr_router = {'id': _uuid(),
+                      'external_gateway_info': {},
+                      'routes': [],
+                      'distributed': True,
+                      'ha': False}
+        routers = [dvr_router, dvr_ha_router]
+        self.plugin_api.get_router_ids.return_value = [r['id'] for r
+                                                       in routers]
+        self.plugin_api.get_routers.return_value = routers
+        with mock.patch.object(namespace_manager.NamespaceManager,
+                               'ensure_snat_cleanup') as ensure_snat_cleanup:
+            agent.periodic_sync_routers_task(agent.context)
+            ensure_snat_cleanup.assert_called_once_with(dvr_router['id'])
+
     def test_periodic_sync_routers_task_call_clean_stale_meta_proxies(self):
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
         stale_router_ids = [_uuid(), _uuid()]
@@ -339,8 +360,10 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                 driver, 'destroy_monitored_metadata_proxy') as destroy_proxy:
             agent.periodic_sync_routers_task(agent.context)
 
-            expected_calls = [mock.call(mock.ANY, r_id, agent.conf)
-                              for r_id in stale_router_ids]
+            expected_calls = [
+                mock.call(
+                    mock.ANY, r_id, agent.conf, namespaces.NS_PREFIX + r_id)
+                for r_id in stale_router_ids]
             self.assertEqual(len(stale_router_ids), destroy_proxy.call_count)
             destroy_proxy.assert_has_calls(expected_calls, any_order=True)
 
@@ -397,7 +420,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             self.assertEqual(1, self.mock_driver.init_router_port.call_count)
             self.send_adv_notif.assert_called_once_with(ri.ns_name,
                                                         interface_name,
-                                                        '99.0.1.9', mock.ANY)
+                                                        '99.0.1.9')
         elif action == 'remove':
             self.device_exists.return_value = True
             ri.internal_network_removed(port)
@@ -409,7 +432,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
     def _fixed_ip_cidr(fixed_ip):
         return '%s/%s' % (fixed_ip['ip_address'], fixed_ip['prefixlen'])
 
-    def _test_internal_network_action_dist(self, action):
+    def _test_internal_network_action_dist(self, action, scope_match=False):
         router = l3_test_common.prepare_router_data(num_internal_ports=2)
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
         self._set_ri_kwargs(agent, router['id'], router)
@@ -445,7 +468,10 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         ri.snat_ports = sn_port
         ri.ex_gw_port = ex_gw_port
         ri.snat_namespace = mock.Mock()
-
+        if scope_match:
+            ri._check_if_address_scopes_match = mock.Mock(return_value=True)
+        else:
+            ri._check_if_address_scopes_match = mock.Mock(return_value=False)
         if action == 'add':
             self.device_exists.return_value = False
 
@@ -455,8 +481,10 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             ri._set_subnet_arp_info = mock.Mock()
             ri._internal_network_added = mock.Mock()
             ri._set_subnet_arp_info = mock.Mock()
+            ri._port_has_ipv6_subnet = mock.Mock(return_value=False)
+            ri._add_interface_routing_rule_to_router_ns = mock.Mock()
+            ri._add_interface_route_to_fip_ns = mock.Mock()
             ri.internal_network_added(port)
-            self.assertEqual(1, ri._snat_redirect_add.call_count)
             self.assertEqual(2, ri._internal_network_added.call_count)
             ri._set_subnet_arp_info.assert_called_once_with(subnet_id)
             ri._internal_network_added.assert_called_with(
@@ -468,19 +496,47 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                 ri._get_snat_int_device_name(sn_port['id']),
                 lib_constants.SNAT_INT_DEV_PREFIX,
                 mtu=None)
+            self.assertTrue(ri._check_if_address_scopes_match.called)
+            if scope_match:
+                self.assertTrue(
+                    ri._add_interface_routing_rule_to_router_ns.called)
+                self.assertTrue(
+                    ri._add_interface_route_to_fip_ns.called)
+                self.assertEqual(0, ri._snat_redirect_add.call_count)
+            else:
+                self.assertFalse(
+                    ri._add_interface_routing_rule_to_router_ns.called)
+                self.assertFalse(
+                    ri._add_interface_route_to_fip_ns.called)
+                self.assertEqual(1, ri._snat_redirect_add.call_count)
         elif action == 'remove':
             self.device_exists.return_value = False
             ri.get_snat_port_for_internal_port = mock.Mock(
                 return_value=sn_port)
             ri._delete_arp_cache_for_internal_port = mock.Mock()
             ri._snat_redirect_modify = mock.Mock()
+            ri._port_has_ipv6_subnet = mock.Mock(return_value=False)
+            ri._delete_interface_routing_rule_in_router_ns = mock.Mock()
+            ri._delete_interface_route_in_fip_ns = mock.Mock()
             ri.internal_network_removed(port)
             self.assertEqual(
                 1, ri._delete_arp_cache_for_internal_port.call_count)
-            ri._snat_redirect_modify.assert_called_with(
-                sn_port, port,
-                ri.get_internal_device_name(port['id']),
-                is_add=False)
+            self.assertTrue(ri._check_if_address_scopes_match.called)
+            if scope_match:
+                self.assertFalse(ri._snat_redirect_modify.called)
+                self.assertTrue(
+                    ri._delete_interface_routing_rule_in_router_ns.called)
+                self.assertTrue(
+                    ri._delete_interface_route_in_fip_ns.called)
+            else:
+                ri._snat_redirect_modify.assert_called_with(
+                    sn_port, port,
+                    ri.get_internal_device_name(port['id']),
+                    is_add=False)
+                self.assertFalse(
+                    ri._delete_interface_routing_rule_in_router_ns.called)
+                self.assertFalse(
+                    ri._delete_interface_route_in_fip_ns.called)
 
     def test_agent_add_internal_network(self):
         self._test_internal_network_action('add')
@@ -488,8 +544,14 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
     def test_agent_add_internal_network_dist(self):
         self._test_internal_network_action_dist('add')
 
+    def test_agent_add_internal_network_dist_with_addr_scope_match(self):
+        self._test_internal_network_action_dist('add', scope_match=True)
+
     def test_agent_remove_internal_network(self):
         self._test_internal_network_action('remove')
+
+    def test_agent_remove_internal_network_dist_with_addr_scope_mismatch(self):
+        self._test_internal_network_action_dist('remove', scope_match=True)
 
     def test_agent_remove_internal_network_dist(self):
         self._test_internal_network_action_dist('remove')
@@ -520,11 +582,10 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                           'clean_connections': True}
             else:
                 exp_arp_calls = [mock.call(ri.ns_name, interface_name,
-                                           '20.0.0.30', mock.ANY)]
+                                           '20.0.0.30')]
                 if dual_stack and not no_sub_gw:
                     exp_arp_calls += [mock.call(ri.ns_name, interface_name,
-                                                '2001:192:168:100::2',
-                                                mock.ANY)]
+                                                '2001:192:168:100::2')]
                 self.send_adv_notif.assert_has_calls(exp_arp_calls)
                 ip_cidrs = ['20.0.0.30/24']
                 if dual_stack:
@@ -629,6 +690,8 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             ri.get_snat_port_for_internal_port = mock.Mock(
                 return_value=sn_port)
             ri._snat_redirect_remove = mock.Mock()
+            if router.get('distributed'):
+                ri.fip_ns.delete_rtr_2_fip_link = mock.Mock()
             ri.router['gw_port'] = ""
             ri.external_gateway_removed(ex_gw_port, interface_name)
             if not router.get('distributed'):
@@ -643,6 +706,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                     ri.get_internal_device_name(sn_port['id']))
                 ri.get_snat_port_for_internal_port.assert_called_with(
                     mock.ANY, ri.snat_ports)
+                self.assertTrue(ri.fip_ns.delete_rtr_2_fip_link.called)
         else:
             raise Exception("Invalid action %s" % action)
 
@@ -664,11 +728,11 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         self.assertEqual(1, self.mock_driver.plug.call_count)
         self.assertEqual(1, self.mock_driver.init_router_port.call_count)
         exp_arp_calls = [mock.call(ri.ns_name, interface_name,
-                                   '20.0.0.30', mock.ANY)]
+                                   '20.0.0.30')]
         if dual_stack:
             ri.use_ipv6 = True
             exp_arp_calls += [mock.call(ri.ns_name, interface_name,
-                                        '2001:192:168:100::2', mock.ANY)]
+                                        '2001:192:168:100::2')]
         self.send_adv_notif.assert_has_calls(exp_arp_calls)
         ip_cidrs = ['20.0.0.30/24']
         gateway_ips = ['20.0.0.1']
@@ -968,7 +1032,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         router = ri.router
         agent.host = HOSTNAME
         fake_fip_id = 'fake_fip_id'
-        ri.create_dvr_fip_interfaces = mock.Mock()
+        ri.create_dvr_external_gateway_on_agent = mock.Mock()
         ri.process_floating_ip_addresses = mock.Mock()
         ri.process_floating_ip_nat_rules = mock.Mock()
         ri.process_floating_ip_addresses.return_value = {
@@ -1047,7 +1111,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         with mock.patch.object(lla.LinkLocalAllocator, '_write'):
             if ri.router['distributed']:
                 ri.fip_ns = agent.get_fip_ns(ex_gw_port['network_id'])
-                ri.create_dvr_fip_interfaces(ex_gw_port)
+                ri.create_dvr_external_gateway_on_agent(ex_gw_port)
             fip_statuses = ri.process_floating_ip_addresses(
                 mock.sentinel.interface_name)
         self.assertEqual({fip_id: lib_constants.FLOATINGIP_STATUS_ACTIVE},
@@ -1089,37 +1153,34 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         ri = dvr_router.DvrEdgeRouter(HOSTNAME, **self.ri_kwargs)
         ext_gw_port = ri.router.get('gw_port')
         ri.fip_ns = agent.get_fip_ns(ext_gw_port['network_id'])
-        ri.dist_fip_count = 0
         agent.process_router_add = mock.Mock()
         ri.fip_ns.create_rtr_2_fip_link = mock.Mock()
         with mock.patch.object(ri, 'get_floating_ips') as fips, \
                 mock.patch.object(ri.fip_ns,
-                                  'create') as create_fip, \
+                               'create') as create_fip, \
                 mock.patch.object(ri, 'get_floating_agent_gw_interface'
                                   ) as fip_gw_port:
             fips.return_value = fake_floatingips
             fip_gw_port.return_value = agent_gateway_port[0]
-            ri.create_dvr_fip_interfaces(ext_gw_port)
+            ri.create_dvr_external_gateway_on_agent(ext_gw_port)
+            ri.connect_rtr_2_fip()
             self.assertTrue(fip_gw_port.called)
-            self.assertTrue(fips.called)
             self.assertTrue(create_fip.called)
             self.assertEqual(agent_gateway_port[0],
                              ri.fip_ns.agent_gateway_port)
+            self.assertTrue(ri.rtr_fip_connect)
             # Now let us associate the fip to the router
             ri.floating_ip_added_dist(fips, "192.168.0.1/32")
-            self.assertEqual(1, ri.dist_fip_count)
             # Now let us disassociate the fip from the router
             ri.floating_ip_removed_dist("192.168.0.1/32")
-            self.assertEqual(0, ri.dist_fip_count)
-            # Calling create_dvr_fip_interfaces again to make sure
-            # that the fip namespace create is not called again.
+            # Calling create_dvr_external_gateway_interfaces again to make
+            # sure that the fip namespace create is not called again.
             # If the create is not called again, that would contain
             # the duplicate rules configuration in the fip namespace.
-            ri.create_dvr_fip_interfaces(ext_gw_port)
+            ri.create_dvr_external_gateway_on_agent(ext_gw_port)
             self.assertTrue(fip_gw_port.called)
-            self.assertTrue(fips.called)
             create_fip.assert_called_once_with()
-            self.assertEqual(2, ri.fip_ns.create_rtr_2_fip_link.call_count)
+            self.assertEqual(1, ri.fip_ns.create_rtr_2_fip_link.call_count)
 
     @mock.patch.object(lla.LinkLocalAllocator, '_write')
     def test_create_dvr_fip_interfaces_for_late_binding(self, lla_write):
@@ -1156,13 +1217,14 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
 
         ext_gw_port = ri.router.get('gw_port')
         ri.fip_ns = agent.get_fip_ns(ext_gw_port['network_id'])
-        ri.dist_fip_count = 0
         ri.fip_ns.subscribe = mock.Mock()
         with mock.patch.object(agent.plugin_rpc,
                                'get_agent_gateway_port') as fip_gw_port:
             fip_gw_port.return_value = agent_gateway_port
-            ri.create_dvr_fip_interfaces(ext_gw_port)
+            ri.create_dvr_external_gateway_on_agent(ext_gw_port)
+            ri.connect_rtr_2_fip()
             self.assertTrue(fip_gw_port.called)
+            self.assertTrue(ri.rtr_fip_connect)
             self.assertEqual(agent_gateway_port,
                              ri.fip_ns.agent_gateway_port)
 
@@ -1201,21 +1263,20 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
 
         ext_gw_port = ri.router.get('gw_port')
         ri.fip_ns = agent.get_fip_ns(ext_gw_port['network_id'])
-        ri.dist_fip_count = 0
         ri.fip_ns.subscribe = mock.Mock()
         ri.fip_ns.agent_router_gateway = mock.Mock()
         agent.process_router_add = mock.Mock()
 
-        with mock.patch.object(ri, 'get_floating_ips') as fips, \
-                mock.patch.object(ri, 'get_floating_agent_gw_interface'
-                                  ) as fip_gw_port:
-            fips.return_value = fake_floatingips
+        with mock.patch.object(
+                    ri,
+                    'get_floating_agent_gw_interface') as fip_gw_port:
             fip_gw_port.return_value = agent_gateway_port[0]
-            ri.create_dvr_fip_interfaces(ext_gw_port)
+            ri.create_dvr_external_gateway_on_agent(ext_gw_port)
+            ri.connect_rtr_2_fip()
             self.assertTrue(fip_gw_port.called)
-            self.assertTrue(fips.called)
             self.assertEqual(agent_gateway_port[0],
                              ri.fip_ns.agent_gateway_port)
+            self.assertTrue(ri.rtr_fip_connect)
             self.assertTrue(ri.rtr_fip_subnet)
 
     @mock.patch.object(lla.LinkLocalAllocator, '_write')
@@ -1254,19 +1315,17 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         ri.fip_ns.subscribe = mock.Mock(return_value=True)
         ri.fip_ns.agent_router_gateway = mock.Mock()
         ri.rtr_fip_subnet = None
-        ri.dist_fip_count = 0
 
-        with mock.patch.object(ri, 'get_floating_ips') as fips,\
-                mock.patch.object(ri, 'get_floating_agent_gw_interface'
-                                  ) as fip_gw_port:
-            fips.return_value = fake_floatingips
+        with mock.patch.object(
+                    ri, 'get_floating_agent_gw_interface') as fip_gw_port:
             fip_gw_port.return_value = agent_gateway_port[0]
-            ri.create_dvr_fip_interfaces(ext_gw_port)
+            ri.create_dvr_external_gateway_on_agent(ext_gw_port)
+            ri.connect_rtr_2_fip()
             self.assertTrue(fip_gw_port.called)
-            self.assertTrue(fips.called)
             self.assertEqual(agent_gateway_port[0],
                              ri.fip_ns.agent_gateway_port)
             self.assertTrue(ri.rtr_fip_subnet)
+            self.assertTrue(ri.rtr_fip_connect)
 
     def test_process_router_cent_floating_ip_add(self):
         fake_floatingips = {'floatingips': [
@@ -2153,7 +2212,8 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                 if enableflag:
                     destroy_proxy.assert_called_with(mock.ANY,
                                                      router_id,
-                                                     mock.ANY)
+                                                     mock.ANY,
+                                                     'qrouter-' + router_id)
                 else:
                     self.assertFalse(destroy_proxy.call_count)
 
@@ -2682,7 +2742,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
 
         def pd_notifier(context, prefix_update):
             self.pd_update = prefix_update
-            for subnet_id, prefix in six.iteritems(prefix_update):
+            for subnet_id, prefix in prefix_update.items():
                 for intf in intfs:
                     for subnet in intf['subnets']:
                         if subnet['id'] == subnet_id:
@@ -2805,7 +2865,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
 
         def pd_notifier(context, prefix_update):
             self.pd_update = prefix_update
-            for subnet_id, prefix in six.iteritems(prefix_update):
+            for subnet_id, prefix in prefix_update.items():
                 gateway_ip = '%s1' % netaddr.IPNetwork(prefix).network
                 for intf in new_intfs:
                     for fip in intf['fixed_ips']:

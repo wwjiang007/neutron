@@ -15,7 +15,6 @@
 import errno
 import itertools
 import os
-import six
 
 import netaddr
 from neutron_lib import exceptions
@@ -425,7 +424,7 @@ class KeepalivedManager(object):
     def spawn(self):
         config_path = self._output_config_file()
 
-        for key, instance in six.iteritems(self.config.instances):
+        for key, instance in self.config.instances.items():
             if instance.track_script:
                 instance.track_script.write_check_script()
 
@@ -482,6 +481,8 @@ class KeepalivedManager(object):
                    '-f', config_path,
                    '-p', pid_file,
                    '-r', self.get_vrrp_pid_file_name(pid_file)]
+            if logging.is_debug_enabled(cfg.CONF):
+                cmd.append('-D')
             return cmd
 
         return callback

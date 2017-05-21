@@ -27,6 +27,7 @@ NETWORK_TYPE = 'network_type'
 PHYSICAL_NETWORK = 'physical_network'
 SEGMENTATION_ID = 'segmentation_id'
 MTU = 'mtu'
+NETWORK_ID = 'network_id'
 
 # The following keys are used in the binding level dictionaries
 # available via the binding_levels and original_binding_levels
@@ -88,7 +89,7 @@ class _TypeDriverBase(object):
     def get_mtu(self, physical):
         """Get driver's network MTU.
 
-        :returns mtu: maximum transmission unit
+        :returns: mtu maximum transmission unit
 
         Returns the mtu for the network based on the config values and
         the network type.
