@@ -15,12 +15,11 @@
 
 import os
 
+from neutron_lib.utils import runtime
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import timeutils
 
-from neutron._i18n import _LE
-from neutron.common import utils as neutron_utils
 from neutron.conf.agent import common as config
 from neutron.conf.agent.database import agents_db
 
@@ -33,7 +32,7 @@ else:
 
 LOG = logging.getLogger(__name__)
 config.register_root_helper(cfg.CONF)
-agents_db.register_agent_opts()
+agents_db.register_db_agents_opts()
 
 INTERFACE_NAMESPACE = 'neutron.interface_drivers'
 
@@ -49,11 +48,11 @@ def load_interface_driver(conf):
     """
 
     try:
-        loaded_class = neutron_utils.load_class_by_alias_or_classname(
+        loaded_class = runtime.load_class_by_alias_or_classname(
                 INTERFACE_NAMESPACE, conf.interface_driver)
         return loaded_class(conf)
     except ImportError:
-        LOG.error(_LE("Error loading interface driver '%s'"),
+        LOG.error("Error loading interface driver '%s'",
                   conf.interface_driver)
         raise SystemExit(1)
 

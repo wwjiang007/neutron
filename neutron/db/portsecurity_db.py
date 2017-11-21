@@ -12,21 +12,23 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.api.definitions import network as net_def
+from neutron_lib.api.definitions import port as port_def
+from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api import validators
 from neutron_lib.plugins import directory
+from neutron_lib.utils import net
 
-from neutron.api.v2 import attributes as attrs
-from neutron.common import utils
 from neutron.db import _resource_extend as resource_extend
 from neutron.db import portsecurity_db_common
-from neutron.extensions import portsecurity as psec
 
 
 @resource_extend.has_resource_extenders
 class PortSecurityDbMixin(portsecurity_db_common.PortSecurityDbCommon):
 
     @staticmethod
-    @resource_extend.extends([attrs.NETWORKS, attrs.PORTS])
+    @resource_extend.extends([net_def.COLLECTION_NAME,
+                              port_def.COLLECTION_NAME])
     def _extend_port_security_dict(response_data, db_data):
         plugin = directory.get_plugin()
         if ('port-security' in
@@ -43,7 +45,7 @@ class PortSecurityDbMixin(portsecurity_db_common.PortSecurityDbCommon):
         """
         has_ip = self._ip_on_port(port)
         # we don't apply security groups for dhcp, router
-        if port.get('device_owner') and utils.is_port_trusted(port):
+        if port.get('device_owner') and net.is_port_trusted(port):
             return (False, has_ip)
 
         if validators.is_attr_set(port.get(psec.PORTSECURITY)):

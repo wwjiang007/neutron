@@ -21,7 +21,6 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from oslo_log import log as logging
 
-from neutron._i18n import _LW
 from neutron.agent.linux import dhcp
 from neutron.agent.linux import ip_lib
 
@@ -99,16 +98,15 @@ class NeutronDebugAgent(object):
         bridge = None
         if network.external:
             bridge = self.conf.external_network_bridge
-        ip = ip_lib.IPWrapper()
         namespace = self._get_namespace(port)
-        if ip.netns.exists(namespace):
+        if ip_lib.network_namespace_exists(namespace):
             self.driver.unplug(self.driver.get_device_name(port),
                                bridge=bridge,
                                namespace=namespace)
             try:
-                ip.netns.delete(namespace)
+                ip_lib.delete_network_namespace(namespace)
             except Exception:
-                LOG.warning(_LW('Failed to delete namespace %s'), namespace)
+                LOG.warning('Failed to delete namespace %s', namespace)
         else:
             self.driver.unplug(self.driver.get_device_name(port),
                                bridge=bridge)

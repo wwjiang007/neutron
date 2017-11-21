@@ -39,7 +39,7 @@ DHCP_RULE_PORT = {4: (67, 68, const.IPv4), 6: (547, 546, const.IPv6)}
 
 
 @registry.has_registry_receivers
-class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
+class SecurityGroupServerNotifierRpcMixin(sg_db.SecurityGroupDbMixin):
     """Mixin class to add agent-based security group implementation."""
 
     @registry.receives(resources.PORT, [events.AFTER_CREATE,
@@ -50,38 +50,8 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
         """Trigger notification to other SG members on port changes."""
         self.notify_security_groups_member_updated(context, port)
 
-    def get_port_from_device(self, context, device):
-        """Get port dict from device name on an agent.
-
-        Subclass must provide this method or get_ports_from_devices.
-
-        :param device: device name which identifies a port on the agent side.
-        What is specified in "device" depends on a plugin agent implementation.
-        For example, it is a port ID in OVS agent and netdev name in Linux
-        Bridge agent.
-        :return: port dict returned by DB plugin get_port(). In addition,
-        it must contain the following fields in the port dict returned.
-        - device
-        - security_groups
-        - security_group_rules,
-        - security_group_source_groups
-        - fixed_ips
-        """
-        raise NotImplementedError(_("%s must implement get_port_from_device "
-                                    "or get_ports_from_devices.")
-                                  % self.__class__.__name__)
-
-    def get_ports_from_devices(self, context, devices):
-        """Bulk method of get_port_from_device.
-
-        Subclasses may override this to provide better performance for DB
-        queries, backend calls, etc.
-        """
-        return [self.get_port_from_device(context, device)
-                for device in devices]
-
     def create_security_group_rule(self, context, security_group_rule):
-        rule = super(SecurityGroupServerRpcMixin,
+        rule = super(SecurityGroupServerNotifierRpcMixin,
                      self).create_security_group_rule(context,
                                                       security_group_rule)
         sgids = [rule['security_group_id']]
@@ -89,7 +59,7 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
         return rule
 
     def create_security_group_rule_bulk(self, context, security_group_rules):
-        rules = super(SecurityGroupServerRpcMixin,
+        rules = super(SecurityGroupServerNotifierRpcMixin,
                       self).create_security_group_rule_bulk_native(
                           context, security_group_rules)
         sgids = set([r['security_group_id'] for r in rules])
@@ -98,7 +68,7 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
 
     def delete_security_group_rule(self, context, sgrid):
         rule = self.get_security_group_rule(context, sgrid)
-        super(SecurityGroupServerRpcMixin,
+        super(SecurityGroupServerNotifierRpcMixin,
               self).delete_security_group_rule(context, sgrid)
         self.notifier.security_groups_rule_updated(context,
                                                    [rule['security_group_id']])
@@ -138,36 +108,16 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
         ingress packet from the dhcp server (as a part of provider rules),
         so we need to notify an update of dhcp server ip
         address to the plugin agent.
-        security_groups_provider_updated() just notifies that an event
-        occurs and the plugin agent fetches the update provider
-        rule in the other RPC call (security_group_rules_for_devices).
         """
-        sg_provider_updated_networks = set()
         sec_groups = set()
         for port in ports:
-            if port['device_owner'] == const.DEVICE_OWNER_DHCP:
-                sg_provider_updated_networks.add(
-                    port['network_id'])
-            # For IPv6, provider rule need to be updated in case router
-            # interface is created or updated after VM port is created.
             # NOTE (Swami): ROUTER_INTERFACE_OWNERS check is required
             # since it includes the legacy router interface device owners
             # and DVR router interface device owners.
-            elif port['device_owner'] in const.ROUTER_INTERFACE_OWNERS:
-                if any(netaddr.IPAddress(fixed_ip['ip_address']).version == 6
-                       for fixed_ip in port['fixed_ips']):
-                    sg_provider_updated_networks.add(
-                        port['network_id'])
-            else:
+            if (port['device_owner'] not in
+                [const.DEVICE_OWNER_DHCP, const.ROUTER_INTERFACE_OWNERS]):
                 sec_groups |= set(port.get(ext_sg.SECURITYGROUPS))
 
-        if sg_provider_updated_networks:
-            ports_query = context.session.query(models_v2.Port.id).filter(
-                models_v2.Port.network_id.in_(
-                    sg_provider_updated_networks)).all()
-            ports_to_update = [p.id for p in ports_query]
-            self.notifier.security_groups_provider_updated(
-                context, ports_to_update)
         if sec_groups:
             self.notifier.security_groups_member_updated(
                 context, list(sec_groups))
@@ -175,7 +125,40 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
     def notify_security_groups_member_updated(self, context, port):
         self.notify_security_groups_member_updated_bulk(context, [port])
 
-    @db_api.retry_if_session_inactive()
+
+class SecurityGroupInfoAPIMixin(object):
+    """API for retrieving security group info for SG agent code."""
+
+    def get_port_from_device(self, context, device):
+        """Get port dict from device name on an agent.
+
+        Subclass must provide this method or get_ports_from_devices.
+
+        :param device: device name which identifies a port on the agent side.
+        What is specified in "device" depends on a plugin agent implementation.
+        For example, it is a port ID in OVS agent and netdev name in Linux
+        Bridge agent.
+        :return: port dict returned by DB plugin get_port(). In addition,
+        it must contain the following fields in the port dict returned.
+        - device
+        - security_groups
+        - security_group_rules,
+        - security_group_source_groups
+        - fixed_ips
+        """
+        raise NotImplementedError(_("%s must implement get_port_from_device "
+                                    "or get_ports_from_devices.")
+                                  % self.__class__.__name__)
+
+    def get_ports_from_devices(self, context, devices):
+        """Bulk method of get_port_from_device.
+
+        Subclasses may override this to provide better performance for DB
+        queries, backend calls, etc.
+        """
+        return [self.get_port_from_device(context, device)
+                for device in devices]
+
     def security_group_info_for_ports(self, context, ports):
         sg_info = {'devices': ports,
                    'security_groups': {},
@@ -244,63 +227,6 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
                     sg_info['sg_member_ips'][sg_id][ethertype].add(ip)
         return sg_info
 
-    def _select_sg_ids_for_ports(self, context, ports):
-        if not ports:
-            return []
-        sg_binding_port = sg_models.SecurityGroupPortBinding.port_id
-        sg_binding_sgid = sg_models.SecurityGroupPortBinding.security_group_id
-        query = context.session.query(sg_binding_sgid)
-        query = query.filter(sg_binding_port.in_(ports.keys()))
-        return query.all()
-
-    def _select_rules_for_ports(self, context, ports):
-        if not ports:
-            return []
-        sg_binding_port = sg_models.SecurityGroupPortBinding.port_id
-        sg_binding_sgid = sg_models.SecurityGroupPortBinding.security_group_id
-
-        sgr_sgid = sg_models.SecurityGroupRule.security_group_id
-
-        query = context.session.query(sg_binding_port,
-                                      sg_models.SecurityGroupRule)
-        query = query.join(sg_models.SecurityGroupRule,
-                           sgr_sgid == sg_binding_sgid)
-        query = query.filter(sg_binding_port.in_(ports.keys()))
-        return query.all()
-
-    def _select_ips_for_remote_group(self, context, remote_group_ids):
-        ips_by_group = {}
-        if not remote_group_ids:
-            return ips_by_group
-        for remote_group_id in remote_group_ids:
-            ips_by_group[remote_group_id] = set()
-
-        ip_port = models_v2.IPAllocation.port_id
-        sg_binding_port = sg_models.SecurityGroupPortBinding.port_id
-        sg_binding_sgid = sg_models.SecurityGroupPortBinding.security_group_id
-
-        # Join the security group binding table directly to the IP allocation
-        # table instead of via the Port table skip an unnecessary intermediary
-        query = context.session.query(sg_binding_sgid,
-                                      models_v2.IPAllocation.ip_address,
-                                      aap_models.AllowedAddressPair.ip_address)
-        query = query.join(models_v2.IPAllocation,
-                           ip_port == sg_binding_port)
-        # Outerjoin because address pairs may be null and we still want the
-        # IP for the port.
-        query = query.outerjoin(
-            aap_models.AllowedAddressPair,
-            sg_binding_port == aap_models.AllowedAddressPair.port_id)
-        query = query.filter(sg_binding_sgid.in_(remote_group_ids))
-        # Each allowed address pair IP record for a port beyond the 1st
-        # will have a duplicate regular IP in the query response since
-        # the relationship is 1-to-many. Dedup with a set
-        for security_group_id, ip_address, allowed_addr_ip in query:
-            ips_by_group[security_group_id].add(ip_address)
-            if allowed_addr_ip:
-                ips_by_group[security_group_id].add(allowed_addr_ip)
-        return ips_by_group
-
     def _select_remote_group_ids(self, ports):
         remote_group_ids = []
         for port in ports.values():
@@ -349,6 +275,9 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
             if ip_version == 4:
                 # v4 dhcp servers can also talk to broadcast
                 dests.append('255.255.255.255/32')
+            elif ip_version == 6:
+                # v6 dhcp responses can target link-local addresses
+                dests.append('fe80::/64')
             source_port, dest_port, ethertype = DHCP_RULE_PORT[ip_version]
             for dest in dests:
                 dhcp_rule = {'direction': 'ingress',
@@ -377,7 +306,6 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
             self._add_ingress_ra_rule(port)
             self._add_ingress_dhcp_rule(port)
 
-    @db_api.retry_if_session_inactive()
     def security_group_rules_for_ports(self, context, ports):
         rules_in_db = self._select_rules_for_ports(context, ports)
         for (port_id, rule_in_db) in rules_in_db:
@@ -399,3 +327,89 @@ class SecurityGroupServerRpcMixin(sg_db.SecurityGroupDbMixin):
             port['security_group_rules'].append(rule_dict)
         self._apply_provider_rule(context, ports)
         return self._convert_remote_group_id_to_ip_prefix(context, ports)
+
+    def _select_ips_for_remote_group(self, context, remote_group_ids):
+        """Get all IP addresses (including allowed addr pairs) for each sg.
+
+        Return dict of lists of IPs keyed by group_id.
+        """
+        raise NotImplementedError()
+
+    def _select_rules_for_ports(self, context, ports):
+        """Get all security group rules associated with a list of ports.
+
+        Return list of tuples of (port_id, sg_rule)
+        """
+        raise NotImplementedError()
+
+    def _select_sg_ids_for_ports(self, context, ports):
+        """Return security group IDs for a list of ports.
+
+        Return list of tuples with a single element of sg_id.
+        """
+        raise NotImplementedError()
+
+
+class SecurityGroupServerRpcMixin(SecurityGroupInfoAPIMixin,
+                                  SecurityGroupServerNotifierRpcMixin):
+    """Server-side RPC mixin using DB for SG notifications and responses."""
+
+    @db_api.retry_if_session_inactive()
+    def _select_sg_ids_for_ports(self, context, ports):
+        if not ports:
+            return []
+        sg_binding_port = sg_models.SecurityGroupPortBinding.port_id
+        sg_binding_sgid = sg_models.SecurityGroupPortBinding.security_group_id
+        query = context.session.query(sg_binding_sgid)
+        query = query.filter(sg_binding_port.in_(ports.keys()))
+        return query.all()
+
+    @db_api.retry_if_session_inactive()
+    def _select_rules_for_ports(self, context, ports):
+        if not ports:
+            return []
+        sg_binding_port = sg_models.SecurityGroupPortBinding.port_id
+        sg_binding_sgid = sg_models.SecurityGroupPortBinding.security_group_id
+
+        sgr_sgid = sg_models.SecurityGroupRule.security_group_id
+
+        query = context.session.query(sg_binding_port,
+                                      sg_models.SecurityGroupRule)
+        query = query.join(sg_models.SecurityGroupRule,
+                           sgr_sgid == sg_binding_sgid)
+        query = query.filter(sg_binding_port.in_(ports.keys()))
+        return query.all()
+
+    @db_api.retry_if_session_inactive()
+    def _select_ips_for_remote_group(self, context, remote_group_ids):
+        ips_by_group = {}
+        if not remote_group_ids:
+            return ips_by_group
+        for remote_group_id in remote_group_ids:
+            ips_by_group[remote_group_id] = set()
+
+        ip_port = models_v2.IPAllocation.port_id
+        sg_binding_port = sg_models.SecurityGroupPortBinding.port_id
+        sg_binding_sgid = sg_models.SecurityGroupPortBinding.security_group_id
+
+        # Join the security group binding table directly to the IP allocation
+        # table instead of via the Port table skip an unnecessary intermediary
+        query = context.session.query(sg_binding_sgid,
+                                      models_v2.IPAllocation.ip_address,
+                                      aap_models.AllowedAddressPair.ip_address)
+        query = query.join(models_v2.IPAllocation,
+                           ip_port == sg_binding_port)
+        # Outerjoin because address pairs may be null and we still want the
+        # IP for the port.
+        query = query.outerjoin(
+            aap_models.AllowedAddressPair,
+            sg_binding_port == aap_models.AllowedAddressPair.port_id)
+        query = query.filter(sg_binding_sgid.in_(remote_group_ids))
+        # Each allowed address pair IP record for a port beyond the 1st
+        # will have a duplicate regular IP in the query response since
+        # the relationship is 1-to-many. Dedup with a set
+        for security_group_id, ip_address, allowed_addr_ip in query:
+            ips_by_group[security_group_id].add(ip_address)
+            if allowed_addr_ip:
+                ips_by_group[security_group_id].add(allowed_addr_ip)
+        return ips_by_group

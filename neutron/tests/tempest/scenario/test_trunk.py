@@ -14,10 +14,11 @@
 
 import netaddr
 from oslo_log import log as logging
+from tempest.common import utils as tutils
 from tempest.common import waiters
 from tempest.lib.common.utils import data_utils
 from tempest.lib import decorators
-from tempest import test
+import testtools
 
 from neutron.common import utils
 from neutron.tests.tempest.common import ssh
@@ -46,7 +47,7 @@ class TrunkTest(base.BaseTempestTestCase):
     force_tenant_isolation = False
 
     @classmethod
-    @test.requires_ext(extension="trunk", service="network")
+    @tutils.requires_ext(extension="trunk", service="network")
     def resource_setup(cls):
         super(TrunkTest, cls).resource_setup()
         # setup basic topology for servers we can log into
@@ -55,8 +56,8 @@ class TrunkTest(base.BaseTempestTestCase):
         router = cls.create_router_by_client()
         cls.create_router_interface(router['id'], cls.subnet['id'])
         cls.keypair = cls.create_keypair()
-        cls.secgroup = cls.manager.network_client.create_security_group(
-            name=data_utils.rand_name('secgroup-'))
+        cls.secgroup = cls.os_primary.network_client.create_security_group(
+            name=data_utils.rand_name('secgroup'))
         cls.security_groups.append(cls.secgroup['security_group'])
         cls.create_loginable_secgroup_rule(
             secgroup_id=cls.secgroup['security_group']['id'])
@@ -86,7 +87,7 @@ class TrunkTest(base.BaseTempestTestCase):
     def _detach_and_delete_trunk(self, server, trunk):
         # we have to detach the interface from the server before
         # the trunk can be deleted.
-        self.manager.compute.InterfacesClient().delete_interface(
+        self.os_primary.compute.InterfacesClient().delete_interface(
             server['id'], trunk['port_id'])
 
         def is_port_detached():
@@ -137,7 +138,7 @@ class TrunkTest(base.BaseTempestTestCase):
         }
 
     def _wait_for_server(self, server):
-        waiters.wait_for_server_status(self.manager.servers_client,
+        waiters.wait_for_server_status(self.os_primary.servers_client,
                                        server['server']['id'],
                                        constants.SERVER_STATUS_ACTIVE)
         self.check_connectivity(server['fip']['floating_ip_address'],
@@ -221,6 +222,9 @@ class TrunkTest(base.BaseTempestTestCase):
                                 CONF.validation.image_ssh_user,
                                 self.keypair['private_key'])
 
+    @testtools.skipUnless(
+          CONF.neutron_plugin_options.image_is_advanced,
+          "Advanced image is required to run this test.")
     @decorators.idempotent_id('a8a02c9b-b453-49b5-89a2-cce7da66aafb')
     def test_subport_connectivity(self):
         vlan_tag = 10

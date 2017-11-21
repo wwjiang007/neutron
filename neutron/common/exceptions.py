@@ -31,14 +31,28 @@ class QosRuleNotFound(e.NotFound):
                 "could not be found.")
 
 
+class QoSPolicyDefaultAlreadyExists(e.Conflict):
+    message = _("A default QoS policy exists for project %(project_id)s.")
+
+
 class PortQosBindingNotFound(e.NotFound):
     message = _("QoS binding for port %(port_id)s and policy %(policy_id)s "
                 "could not be found.")
 
 
+class PortQosBindingError(e.NeutronException):
+    message = _("QoS binding for port %(port_id)s and policy %(policy_id)s "
+                "could not be created: %(db_error)s.")
+
+
 class NetworkQosBindingNotFound(e.NotFound):
     message = _("QoS binding for network %(net_id)s and policy %(policy_id)s "
                 "could not be found.")
+
+
+class NetworkQosBindingError(e.NeutronException):
+    message = _("QoS binding for network %(net_id)s and policy %(policy_id)s "
+                "could not be created: %(db_error)s.")
 
 
 class PlacementEndpointNotFound(e.NotFound):
@@ -95,6 +109,8 @@ class FlatNetworkInUse(e.InUse):
 
 
 class TenantNetworksDisabled(e.ServiceUnavailable):
+    # NOTE(vvargaszte): May be removed in the future as it is not used in
+    # Neutron, only in the Neutron plugin of OpenContrail.
     message = _("Tenant network creation is not enabled.")
 
 
@@ -168,10 +184,6 @@ class QoSRuleParameterConflict(e.Conflict):
                 "%(existing_value)s.")
 
 
-class InvalidExtensionEnv(e.BadRequest):
-    message = _("Invalid extension environment: %(reason)s.")
-
-
 class ExtensionsNotFound(e.NotFound):
     message = _("Extensions not found: %(extensions)s.")
 
@@ -212,6 +224,11 @@ class DuplicatedExtension(e.NeutronException):
     message = _("Found duplicate extension: %(alias)s.")
 
 
+class DriverCallError(e.MultipleExceptions):
+    def __init__(self, exc_list=None):
+        super(DriverCallError, self).__init__(exc_list or [])
+
+
 class DeviceIDNotOwnedByTenant(e.Conflict):
     message = _("The following device_id %(device_id)s is not owned by your "
                 "tenant or matches another tenants router.")
@@ -223,10 +240,6 @@ class InvalidCIDR(e.BadRequest):
 
 class RouterNotCompatibleWithAgent(e.NeutronException):
     message = _("Router '%(router_id)s' is not compatible with this agent.")
-
-
-class DvrHaRouterNotSupported(e.NeutronException):
-    message = _("Router '%(router_id)s' cannot be both DVR and HA.")
 
 
 class FailToDropPrivilegesExit(SystemExit):
@@ -253,10 +266,6 @@ class NetworkIdOrRouterIdRequiredError(e.NeutronException):
 
 class AbortSyncRouters(e.NeutronException):
     message = _("Aborting periodic_sync_routers_task due to an error.")
-
-
-class MissingMinSubnetPoolPrefix(e.BadRequest):
-    message = _("Unspecified minimum subnet pool prefix.")
 
 
 class EmptySubnetPoolPrefixList(e.BadRequest):
@@ -343,3 +352,16 @@ class TenantQuotaNotFound(e.NotFound):
 
 class TenantIdProjectIdFilterConflict(e.BadRequest):
     message = _("Both tenant_id and project_id passed as filters.")
+
+
+class MultipleFilterIDForIPFound(e.Conflict):
+    message = _("Multiple filter IDs for IP %(ip)s found.")
+
+
+class FilterIDForIPNotFound(e.NotFound):
+    message = _("Filter ID for IP %(ip)s could not be found.")
+
+
+class FailedToAddQdiscToDevice(e.NeutronException):
+    message = _("Failed to add %(direction)s qdisc "
+                "to device %(device)s.")

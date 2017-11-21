@@ -13,11 +13,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib import constants
 from neutron_lib.db import constants as db_const
 from neutron_lib.db import model_base
 import sqlalchemy as sa
 
-from neutron.common import constants
 from neutron.db import models_v2
 from neutron.db import rbac_db_models
 from neutron.db import standard_attr
@@ -31,6 +31,8 @@ class QosPolicy(standard_attr.HasStandardAttributes, model_base.BASEV2,
                                        backref='qos_policy', lazy='subquery',
                                        cascade='all, delete, delete-orphan')
     api_collections = ['policies']
+    collection_resource_map = {'policies': 'policy'}
+    tag_support = True
 
 
 class QosNetworkPolicyBinding(model_base.BASEV2):
@@ -71,6 +73,17 @@ class QosPortPolicyBinding(model_base.BASEV2):
         models_v2.Port, load_on_pending=True,
         backref=sa.orm.backref("qos_policy_binding", uselist=False,
                                cascade='delete', lazy='joined'))
+
+
+class QosPolicyDefault(model_base.BASEV2,
+                       model_base.HasProjectPrimaryKeyIndex):
+    __tablename__ = 'qos_policies_default'
+    qos_policy_id = sa.Column(sa.String(36),
+                              sa.ForeignKey('qos_policies.id',
+                                            ondelete='CASCADE'),
+                              nullable=False)
+    revises_on_change = ('qos_policy',)
+    qos_policy = sa.orm.relationship(QosPolicy, load_on_pending=True)
 
 
 class QosBandwidthLimitRule(model_base.HasId, model_base.BASEV2):

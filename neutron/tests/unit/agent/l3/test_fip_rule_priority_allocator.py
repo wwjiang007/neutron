@@ -17,9 +17,6 @@ from neutron.tests import base
 
 
 class TestFipPriority(base.BaseTestCase):
-    def setUp(self):
-        super(TestFipPriority, self).setUp()
-
     def test__init__(self):
         test_pr = frpa.FipPriority(10)
         self.assertEqual(10, test_pr.index)
@@ -54,8 +51,8 @@ class TestFipRulePriorityAllocator(base.BaseTestCase):
 
     def test__init__(self):
         _frpa = frpa.FipRulePriorityAllocator(self.data_store_path,
-                                            self.priority_rule_start,
-                                            self.priority_rule_end)
+                                              self.priority_rule_start,
+                                              self.priority_rule_end)
         self.assertEqual(self.data_store_path, _frpa.state_file)
         self.assertEqual(frpa.FipPriority, _frpa.ItemClass)
         self.assertEqual(100, len(_frpa.pool))

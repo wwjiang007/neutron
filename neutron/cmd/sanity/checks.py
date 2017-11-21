@@ -23,7 +23,6 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import uuidutils
 
-from neutron._i18n import _LE
 from neutron.agent.common import ovs_lib
 from neutron.agent.l3 import ha_router
 from neutron.agent.l3 import namespaces
@@ -35,7 +34,6 @@ from neutron.agent.linux import utils as agent_utils
 from neutron.cmd import runtime_checks
 from neutron.common import constants
 from neutron.common import utils as common_utils
-from neutron.plugins.common import constants as const
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
     import constants as ovs_const
 
@@ -50,14 +48,14 @@ MINIMUM_DIBBLER_VERSION = '1.0.1'
 def ovs_vxlan_supported(from_ip='192.0.2.1', to_ip='192.0.2.2'):
     name = common_utils.get_rand_device_name(prefix='vxlantest-')
     with ovs_lib.OVSBridge(name) as br:
-        port = br.add_tunnel_port(from_ip, to_ip, const.TYPE_VXLAN)
+        port = br.add_tunnel_port(from_ip, to_ip, n_consts.TYPE_VXLAN)
         return port != ovs_lib.INVALID_OFPORT
 
 
 def ovs_geneve_supported(from_ip='192.0.2.3', to_ip='192.0.2.4'):
     name = common_utils.get_rand_device_name(prefix='genevetest-')
     with ovs_lib.OVSBridge(name) as br:
-        port = br.add_tunnel_port(from_ip, to_ip, const.TYPE_GENEVE)
+        port = br.add_tunnel_port(from_ip, to_ip, n_consts.TYPE_GENEVE)
         return port != ovs_lib.INVALID_OFPORT
 
 
@@ -104,8 +102,8 @@ def ofctl_arg_supported(cmd, **kwargs):
                       "command %s. Exception: %s", full_args, e)
             return False
         except Exception:
-            LOG.exception(_LE("Unexpected exception while checking supported"
-                              " feature via command: %s"), full_args)
+            LOG.exception("Unexpected exception while checking supported"
+                          " feature via command: %s", full_args)
             return False
         else:
             return True
@@ -157,8 +155,8 @@ def _vf_management_support(required_caps):
                 LOG.debug("ip link command does not support "
                           "vf capability '%(cap)s'", {'cap': cap})
     except ip_link_support.UnsupportedIpLinkCommand:
-        LOG.exception(_LE("Unexpected exception while checking supported "
-                          "ip link command"))
+        LOG.exception("Unexpected exception while checking supported "
+                      "ip link command")
         return False
     return is_supported
 
@@ -182,15 +180,13 @@ def vf_extended_management_supported():
 
 
 def netns_read_requires_helper():
-    ipw = ip_lib.IPWrapper()
     nsname = "netnsreadtest-" + uuidutils.generate_uuid()
-    ipw.netns.add(nsname)
+    ip_lib.create_network_namespace(nsname)
     try:
         # read without root_helper. if exists, not required.
-        ipw_nohelp = ip_lib.IPWrapper()
-        exists = ipw_nohelp.netns.exists(nsname)
+        exists = ip_lib.network_namespace_exists(nsname)
     finally:
-        ipw.netns.delete(nsname)
+        ip_lib.delete_network_namespace(nsname)
     return not exists
 
 
@@ -295,7 +291,7 @@ class KeepalivedIPv6Test(object):
         common_utils.wait_until_true(_gw_vip_assigned)
 
     def __enter__(self):
-        ip_lib.IPWrapper().netns.add(self.nsname)
+        ip_lib.create_network_namespace(self.nsname)
         return self
 
     def __exit__(self, exc_type, exc_value, exc_tb):
@@ -305,7 +301,7 @@ class KeepalivedIPv6Test(object):
             self.manager.disable()
         if self.config_path:
             shutil.rmtree(self.config_path, ignore_errors=True)
-        ip_lib.IPWrapper().netns.delete(self.nsname)
+        ip_lib.delete_network_namespace(self.nsname)
         cfg.CONF.set_override('check_child_processes_interval',
                               self.orig_interval, 'AGENT')
 
@@ -341,6 +337,7 @@ def keepalived_ipv6_supported():
 
             ha_dev.link.set_up()
             gw_dev.link.set_up()
+            ha_dev.addr.add('169.254.192.8/18')
 
             ka.configure()
 
@@ -362,11 +359,11 @@ def ovsdb_native_supported():
         ovs.get_bridges()
         return True
     except ImportError as ex:
-        LOG.error(_LE("Failed to import required modules. Ensure that the "
-                      "python-openvswitch package is installed. Error: %s"),
+        LOG.error("Failed to import required modules. Ensure that the "
+                  "python-openvswitch package is installed. Error: %s",
                   ex)
     except Exception:
-        LOG.exception(_LE("Unexpected exception occurred."))
+        LOG.exception("Unexpected exception occurred.")
 
     return False
 
@@ -450,13 +447,12 @@ def _fix_ip_nonlocal_bind_root_value(original_value):
 
 
 def ip_nonlocal_bind():
-    ipw = ip_lib.IPWrapper()
     nsname1 = "ipnonlocalbind1-" + uuidutils.generate_uuid()
     nsname2 = "ipnonlocalbind2-" + uuidutils.generate_uuid()
 
-    ipw.netns.add(nsname1)
+    ip_lib.create_network_namespace(nsname1)
     try:
-        ipw.netns.add(nsname2)
+        ip_lib.create_network_namespace(nsname2)
         try:
             original_value = ip_lib.get_ip_nonlocal_bind(namespace=None)
             try:
@@ -470,7 +466,7 @@ def ip_nonlocal_bind():
                       "Exception: %s", e)
             return False
         finally:
-            ipw.netns.delete(nsname2)
+            ip_lib.delete_network_namespace(nsname2)
     finally:
-        ipw.netns.delete(nsname1)
+        ip_lib.delete_network_namespace(nsname1)
     return ns1_value == 0

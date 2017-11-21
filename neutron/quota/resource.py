@@ -12,33 +12,46 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.plugins import constants
+from neutron_lib.plugins import directory
 from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import excutils
 from sqlalchemy import exc as sql_exc
 from sqlalchemy.orm import session as se
 
-from neutron._i18n import _LE, _LW
 from neutron.db import api as db_api
 from neutron.db.quota import api as quota_api
 
 LOG = log.getLogger(__name__)
 
 
-def _count_resource(context, plugin, collection_name, tenant_id):
+def _count_resource(context, collection_name, tenant_id):
     count_getter_name = "get_%s_count" % collection_name
+    getter_name = "get_%s" % collection_name
 
-    # Some plugins support a count method for particular resources,
-    # using a DB's optimized counting features. We try to use that one
-    # if present. Otherwise just use regular getter to retrieve all objects
-    # and count in python, allowing older plugins to still be supported
-    try:
-        obj_count_getter = getattr(plugin, count_getter_name)
-        return obj_count_getter(context, filters={'tenant_id': [tenant_id]})
-    except (NotImplementedError, AttributeError):
-        obj_getter = getattr(plugin, "get_%s" % collection_name)
-        obj_list = obj_getter(context, filters={'tenant_id': [tenant_id]})
-        return len(obj_list) if obj_list else 0
+    plugins = directory.get_plugins()
+    for pname in sorted(plugins,
+                        # inspect core plugin first
+                        key=lambda n: n != constants.CORE):
+        # Some plugins support a count method for particular resources, using a
+        # DB's optimized counting features. We try to use that one if present.
+        # Otherwise just use regular getter to retrieve all objects and count
+        # in python, allowing older plugins to still be supported
+        try:
+            obj_count_getter = getattr(plugins[pname], count_getter_name)
+            return obj_count_getter(
+                context, filters={'tenant_id': [tenant_id]})
+        except (NotImplementedError, AttributeError):
+            try:
+                obj_getter = getattr(plugins[pname], getter_name)
+                obj_list = obj_getter(
+                    context, filters={'tenant_id': [tenant_id]})
+                return len(obj_list) if obj_list else 0
+            except (NotImplementedError, AttributeError):
+                pass
+    raise NotImplementedError(
+        'No plugins that support counting %s found.' % collection_name)
 
 
 class BaseResource(object):
@@ -130,7 +143,8 @@ class CountableResource(BaseResource):
         self._count_func = count
 
     def count(self, context, plugin, tenant_id, **kwargs):
-        return self._count_func(context, plugin, self.plural_name, tenant_id)
+        # NOTE(ihrachys) _count_resource doesn't receive plugin
+        return self._count_func(context, self.plural_name, tenant_id)
 
 
 class TrackedResource(BaseResource):
@@ -188,9 +202,6 @@ class TrackedResource(BaseResource):
             dirty_tenants_snap = self._dirty_tenants.copy()
             for tenant_id in dirty_tenants_snap:
                 quota_api.set_quota_usage_dirty(context, self.name, tenant_id)
-                LOG.debug(("Persisted dirty status for tenant:%(tenant_id)s "
-                           "on resource:%(resource)s"),
-                          {'tenant_id': tenant_id, 'resource': self.name})
         self._out_of_sync_tenants |= dirty_tenants_snap
         self._dirty_tenants -= dirty_tenants_snap
 
@@ -199,8 +210,8 @@ class TrackedResource(BaseResource):
             tenant_id = target['tenant_id']
         except AttributeError:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Model class %s does not have a tenant_id "
-                              "attribute"), target)
+                LOG.error("Model class %s does not have a tenant_id "
+                          "attribute", target)
         self._dirty_tenants.add(tenant_id)
 
     # Retry the operation if a duplicate entry exception is raised. This
@@ -234,27 +245,17 @@ class TrackedResource(BaseResource):
         # Update quota usage
         return self._resync(context, tenant_id, in_use)
 
-    def count(self, context, _plugin, tenant_id, resync_usage=True):
-        """Return the current usage count for the resource.
+    def count_used(self, context, tenant_id, resync_usage=True):
+        """Returns the current usage count for the resource.
 
-        This method will fetch aggregate information for resource usage
-        data, unless usage data are marked as "dirty".
-        In the latter case resource usage will be calculated counting
-        rows for tenant_id in the resource's database model.
-        Active reserved amount are instead always calculated by summing
-        amounts for matching records in the 'reservations' database model.
-
-        The _plugin and _resource parameters are unused but kept for
-        compatibility with the signature of the count method for
-        CountableResource instances.
+        :param context: The request context.
+        :param tenant_id: The ID of the tenant
+        :param resync_usage: Default value is set to True. Syncs
+            with in_use usage.
         """
         # Load current usage data, setting a row-level lock on the DB
         usage_info = quota_api.get_quota_usage_by_resource_and_tenant(
             context, self.name, tenant_id)
-        # Always fetch reservations, as they are not tracked by usage counters
-        reservations = quota_api.get_reservations_for_resources(
-            context, tenant_id, [self.name])
-        reserved = reservations.get(self.name, 0)
 
         # If dirty or missing, calculate actual resource usage querying
         # the database and set/create usage info data
@@ -287,14 +288,33 @@ class TrackedResource(BaseResource):
                        "Used quota:%(used)d."),
                       {'resource': self.name,
                        'used': usage_info.used})
-        return usage_info.used + reserved
+        return usage_info.used
+
+    def count_reserved(self, context, tenant_id):
+        """Return the current reservation count for the resource."""
+        # NOTE(princenana) Current implementation of reservations
+        # is ephemeral and returns the default value
+        reservations = quota_api.get_reservations_for_resources(
+            context, tenant_id, [self.name])
+        reserved = reservations.get(self.name, 0)
+        return reserved
+
+    def count(self, context, _plugin, tenant_id, resync_usage=True):
+        """Return the count of the resource.
+
+        The _plugin parameter is unused but kept for
+        compatibility with the signature of the count method for
+        CountableResource instances.
+        """
+        return (self.count_used(context, tenant_id, resync_usage) +
+                self.count_reserved(context, tenant_id))
 
     def _except_bulk_delete(self, delete_context):
         if delete_context.mapper.class_ == self._model_class:
-            raise RuntimeError(_LE("%s may not be deleted in bulk because "
-                                   "it is tracked by the quota engine via "
-                                   "SQLAlchemy event handlers, which are not "
-                                   "compatible with bulk deletes.") %
+            raise RuntimeError("%s may not be deleted in bulk because "
+                               "it is tracked by the quota engine via "
+                               "SQLAlchemy event handlers, which are not "
+                               "compatible with bulk deletes." %
                                self._model_class)
 
     def register_events(self):
@@ -312,5 +332,5 @@ class TrackedResource(BaseResource):
             db_api.sqla_remove(se.Session, 'after_bulk_delete',
                                self._except_bulk_delete)
         except sql_exc.InvalidRequestError:
-            LOG.warning(_LW("No sqlalchemy event for resource %s found"),
+            LOG.warning("No sqlalchemy event for resource %s found",
                         self.name)

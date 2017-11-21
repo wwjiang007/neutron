@@ -19,22 +19,19 @@ from neutron_lib import constants as lib_constants
 ROUTER_PORT_OWNERS = lib_constants.ROUTER_INTERFACE_OWNERS_SNAT + \
     (lib_constants.DEVICE_OWNER_ROUTER_GW,)
 
-ROUTER_STATUS_ACTIVE = 'ACTIVE'
-ROUTER_STATUS_ERROR = 'ERROR'
-
-DEVICE_ID_RESERVED_DHCP_PORT = "reserved_dhcp_port"
-
 HA_ROUTER_STATE_KEY = '_ha_state'
 METERING_LABEL_KEY = '_metering_labels'
 FLOATINGIP_AGENT_INTF_KEY = '_floatingip_agent_interfaces'
 SNAT_ROUTER_INTF_KEY = '_snat_router_interfaces'
+DVR_SNAT_BOUND = 'dvr_snat_bound'
+L3_AGENT_MODE_DVR_NO_EXTERNAL = 'dvr_no_external'
 
 HA_NETWORK_NAME = 'HA network tenant %s'
 HA_SUBNET_NAME = 'HA subnet tenant %s'
 HA_PORT_NAME = 'HA port tenant %s'
 HA_ROUTER_STATE_ACTIVE = 'active'
 HA_ROUTER_STATE_STANDBY = 'standby'
-
+VALID_HA_STATES = (HA_ROUTER_STATE_ACTIVE, HA_ROUTER_STATE_STANDBY)
 PAGINATION_INFINITE = 'infinite'
 
 SORT_DIRECTION_ASC = 'asc'
@@ -48,11 +45,58 @@ ETHERTYPE_IPV6 = 0x86DD
 IP_PROTOCOL_NAME_ALIASES = {lib_constants.PROTO_NAME_IPV6_ICMP_LEGACY:
                             lib_constants.PROTO_NAME_IPV6_ICMP}
 
-VALID_DSCP_MARKS = [0, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34,
-                    36, 38, 40, 46, 48, 56]
-
 IP_PROTOCOL_NUM_TO_NAME_MAP = {
     str(v): k for k, v in lib_constants.IP_PROTOCOL_MAP.items()}
+
+# When using iptables-save we specify '-p {proto}',
+# but sometimes those values are not identical.  This is a map
+# of known protocol names or numbers that require a name change.
+# This legacy mapping can go away once neutron-lib is updated.
+IPTABLES_PROTOCOL_LEGACY_NUM_MAP = {3: 'ggp',
+                                    4: 'ipencap',
+                                    5: 'st',
+                                    9: 'igp',
+                                    12: 'pup',
+                                    20: 'hmp',
+                                    22: 'xns-idp',
+                                    27: 'rdp',
+                                    29: 'iso-tp4',
+                                    36: 'xtp',
+                                    37: 'ddp',
+                                    38: 'idpr-cmtp',
+                                    45: 'idrp',
+                                    57: 'skip',
+                                    73: 'rspf',
+                                    81: 'vmtp',
+                                    88: 'eigrp',
+                                    93: 'ax.25',
+                                    94: 'ipip',
+                                    97: 'etherip',
+                                    98: 'encap',
+                                    103: 'pim',
+                                    108: 'ipcomp',
+                                    115: 'lt2p',
+                                    124: 'isis',
+                                    133: 'fc',
+                                    135: 'mobility-header',
+                                    137: 'mpls-in-ip',
+                                    138: 'manet',
+                                    139: 'hip',
+                                    140: 'shim6',
+                                    141: 'wesp',
+                                    142: 'rohc'}
+
+# - protocol 0 uses no -p argument
+# - 'ipv6-encap' uses 'ipv6'
+# - 'icmpv6' uses 'ipv6-icmp'
+# - 'pgm' uses number 113 instead of its name
+IPTABLES_PROTOCOL_NAME_MAP = {0: None,
+                              lib_constants.PROTO_NAME_IPV6_ENCAP:
+                                  'ipv6',
+                              lib_constants.PROTO_NAME_IPV6_ICMP_LEGACY:
+                                  'ipv6-icmp',
+                              lib_constants.PROTO_NAME_PGM: '113'}
+IPTABLES_PROTOCOL_NAME_MAP.update(IPTABLES_PROTOCOL_LEGACY_NUM_MAP)
 
 # When using iptables-save we specify '-p {proto} -m {module}',
 # but sometimes those values are not identical.  This is a map
@@ -64,9 +108,6 @@ IPTABLES_PROTOCOL_MAP = {lib_constants.PROTO_NAME_DCCP: 'dccp',
                          lib_constants.PROTO_NAME_SCTP: 'sctp',
                          lib_constants.PROTO_NAME_TCP: 'tcp',
                          lib_constants.PROTO_NAME_UDP: 'udp'}
-
-# Special provisional prefix for IPv6 Prefix Delegation
-PROVISIONAL_IPV6_PD_PREFIX = '::/64'
 
 # Timeout in seconds for getting an IPv6 LLA
 LLA_TASK_TIMEOUT = 40
@@ -84,11 +125,6 @@ INTERFACE_PREFIXES = (lib_constants.TAP_DEVICE_PREFIX,
                       lib_constants.SNAT_INT_DEV_PREFIX)
 
 ATTRIBUTES_TO_UPDATE = 'attributes_to_update'
-
-# Maximum value integer can take in MySQL and PostgreSQL
-# In SQLite integer can be stored in 1, 2, 3, 4, 6, or 8 bytes,
-# but here it will be limited by this value for consistency.
-DB_INTEGER_MAX_VALUE = 2 ** 31 - 1
 
 # TODO(amuller): Re-define the RPC namespaces once Oslo messaging supports
 # Targets with multiple namespaces. Neutron will then implement callbacks
@@ -113,18 +149,6 @@ IPV6_MIN_MTU = 1280
 
 ROUTER_MARK_MASK = "0xffff"
 
-# Agent states as detected by server, used to reply on agent's state report
-# agent has just been registered
-AGENT_NEW = 'new'
-# agent is alive
-AGENT_ALIVE = 'alive'
-# agent has just returned to alive after being dead
-AGENT_REVIVED = 'revived'
-
-INGRESS_DIRECTION = 'ingress'
-EGRESS_DIRECTION = 'egress'
-
-VALID_DIRECTIONS = (INGRESS_DIRECTION, EGRESS_DIRECTION)
 VALID_ETHERTYPES = (lib_constants.IPv4, lib_constants.IPv6)
 
 IP_ALLOWED_VERSIONS = [lib_constants.IP_VERSION_4, lib_constants.IP_VERSION_6]
@@ -161,7 +185,17 @@ IPAM_ALLOCATION_STATUS_ALLOCATED = 'ALLOCATED'
 VALID_IPAM_ALLOCATION_STATUSES = (IPAM_ALLOCATION_STATUS_ALLOCATED,)
 
 # Port binding states for Live Migration
-PORT_BINDING_STATUS_ACTIVE = 'ACTIVE'
-PORT_BINDING_STATUS_INACTIVE = 'INACTIVE'
-PORT_BINDING_STATUSES = (PORT_BINDING_STATUS_ACTIVE,
-                         PORT_BINDING_STATUS_INACTIVE)
+PORT_BINDING_STATUSES = (lib_constants.ACTIVE,
+                         lib_constants.INACTIVE)
+
+VALID_FLOATINGIP_STATUS = (lib_constants.FLOATINGIP_STATUS_ACTIVE,
+                           lib_constants.FLOATINGIP_STATUS_DOWN,
+                           lib_constants.FLOATINGIP_STATUS_ERROR)
+
+# Floating IP host binding states
+FLOATING_IP_HOST_UNBOUND = "FLOATING_IP_HOST_UNBOUND"
+FLOATING_IP_HOST_NEEDS_BINDING = "FLOATING_IP_HOST_NEEDS_BINDING"
+
+# Possible types of values (e.g. in QoS rule types)
+VALUES_TYPE_CHOICES = "choices"
+VALUES_TYPE_RANGE = "range"

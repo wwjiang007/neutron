@@ -21,6 +21,7 @@ import mock
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from neutron_lib import context as n_context
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 from oslo_utils import importutils
@@ -38,10 +39,11 @@ from neutron.db import l3_hamode_db
 from neutron.db import l3_hascheduler_db
 from neutron.db.models import agent as agent_model
 from neutron.db.models import l3agent as rb_model
-from neutron.db.models import l3ha as l3ha_model
 from neutron.extensions import l3
 from neutron.extensions import l3agentscheduler as l3agent
 from neutron import manager
+from neutron.objects import l3_hamode
+from neutron.objects import l3agent as rb_obj
 from neutron.scheduler import l3_agent_scheduler
 from neutron.tests import base
 from neutron.tests.common import helpers
@@ -284,7 +286,7 @@ class L3SchedulerTestBaseMixin(object):
         self.plugin._unbind_router(self.adminContext,
                             router['router']['id'],
                             agent_id)
-        bindings = self.plugin._get_l3_bindings_hosting_routers(
+        bindings = rb_obj.RouterL3AgentBinding.get_l3_agents_by_router_ids(
             self.adminContext, [router['router']['id']])
         self.assertEqual(0, len(bindings))
 
@@ -493,7 +495,7 @@ class L3SchedulerTestBaseMixin(object):
         # checking that bind_router() is not throwing
         # when supplied with router_id of non-existing router
         scheduler.bind_router(self.plugin, self.adminContext,
-                              "dummyID", self.agent_id1)
+                              uuidutils.generate_uuid(), self.agent_id1)
 
     def test_bind_existing_router(self):
         router = self._make_router(self.fmt,
@@ -825,21 +827,12 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             },
         }
         port = kwargs.get('original_port')
-        port_addr_pairs = port['allowed_address_pairs']
         l3plugin = mock.Mock()
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_port_update(
             'port', 'after_update', mock.ANY, **kwargs)
         l3plugin._get_allowed_address_pair_fixed_ips.return_value = (
             ['10.1.0.21'])
-        self.assertTrue(
-            l3plugin.remove_unbound_allowed_address_pair_port_binding.
-            called)
-        l3plugin.remove_unbound_allowed_address_pair_port_binding.\
-            assert_called_once_with(
-                self.adminContext,
-                port,
-                port_addr_pairs[0])
         self.assertFalse(
             l3plugin.update_arp_entry_for_dvr_service_port.called)
         l3plugin.delete_arp_entry_for_dvr_service_port.\
@@ -847,7 +840,6 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
                 self.adminContext,
                 port,
                 fixed_ips_to_delete=mock.ANY)
-        self.assertFalse(l3plugin.dvr_handle_new_service_port.called)
 
     def test__notify_l3_agent_update_port_with_allowed_address_pairs(self):
         port_id = uuidutils.generate_uuid()
@@ -871,23 +863,12 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
                 'admin_state_up': True,
             },
         }
-        port = kwargs.get('port')
-        port_addr_pairs = port['allowed_address_pairs']
         l3plugin = mock.Mock()
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_port_update(
             'port', 'after_update', mock.ANY, **kwargs)
         self.assertTrue(
-            l3plugin.update_unbound_allowed_address_pair_port_binding.
-            called)
-        l3plugin.update_unbound_allowed_address_pair_port_binding.\
-            assert_called_once_with(
-                self.adminContext,
-                port,
-                port_addr_pairs[0])
-        self.assertTrue(
             l3plugin.update_arp_entry_for_dvr_service_port.called)
-        self.assertTrue(l3plugin.dvr_handle_new_service_port.called)
 
     def test__notify_l3_agent_update_port_no_removing_routers(self):
         port_id = 'fake-port'
@@ -910,7 +891,7 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             'router', constants.L3_AGENT_SCHEDULER_EXT_ALIAS,
             constants.L3_DISTRIBUTED_EXT_ALIAS
         ]
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_port_update(
             'port', 'after_update', plugin, **kwargs)
         self.assertFalse(
@@ -929,7 +910,7 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             },
         }
         l3plugin = mock.Mock()
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_new_port(
             'port', 'after_create', mock.ANY, **kwargs)
         l3plugin.update_arp_entry_for_dvr_service_port.\
@@ -947,7 +928,7 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             }
         }
         l3plugin = mock.Mock()
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_new_port(
             'port', 'after_create', mock.ANY, **kwargs)
         self.assertFalse(
@@ -969,7 +950,7 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             },
         }
         l3plugin = mock.Mock()
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_port_update(
             'port', 'after_update', mock.ANY, **kwargs)
         l3plugin.dvr_handle_new_service_port.assert_called_once_with(
@@ -991,7 +972,7 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             },
         }
         l3plugin = mock.Mock()
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_port_update(
             'port', 'after_update', mock.ANY, **kwargs)
 
@@ -1016,7 +997,7 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             'mac_address_updated': True
         }
         l3plugin = mock.Mock()
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_port_update(
             'port', 'after_update', mock.ANY, **kwargs)
 
@@ -1062,7 +1043,7 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             },
         }
         l3plugin = mock.Mock()
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         with mock.patch.object(l3plugin, 'get_dvr_routers_to_remove',
                                return_value=routers_to_remove),\
                 mock.patch.object(l3plugin, '_get_floatingips_by_port_id',
@@ -1109,7 +1090,7 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             'router', constants.L3_AGENT_SCHEDULER_EXT_ALIAS,
             constants.L3_DISTRIBUTED_EXT_ALIAS
         ]
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         with mock.patch.object(l3plugin, 'get_dvr_routers_to_remove',
                                return_value=[{'agent_id': 'foo_agent',
                                               'router_id': 'foo_id',
@@ -1137,7 +1118,7 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             'router', constants.L3_AGENT_SCHEDULER_EXT_ALIAS,
             constants.L3_DISTRIBUTED_EXT_ALIAS
         ]
-        directory.add_plugin(constants.L3, l3plugin)
+        directory.add_plugin(plugin_constants.L3, l3plugin)
         port = {
                 'id': uuidutils.generate_uuid(),
                 'device_id': 'abcd',
@@ -1313,7 +1294,7 @@ class L3HAPlugin(db_v2.NeutronDbPluginV2,
 
     @classmethod
     def get_plugin_type(cls):
-        return constants.L3
+        return plugin_constants.L3
 
     def get_plugin_description(self):
         return "L3 Routing Service Plugin for testing"
@@ -1336,7 +1317,7 @@ class L3HATestCaseMixin(testlib_api.SqlTestCase,
         cfg.CONF.set_override('max_l3_agents_per_router', 0)
 
         manager.init()
-        self.plugin = directory.get_plugin(constants.L3)
+        self.plugin = directory.get_plugin(plugin_constants.L3)
         self.plugin.router_scheduler = importutils.import_object(
             'neutron.scheduler.l3_agent_scheduler.ChanceScheduler'
         )
@@ -1387,6 +1368,35 @@ class L3HATestCaseMixin(testlib_api.SqlTestCase,
                     self.plugin, self.adminContext,
                     router['id'], router['tenant_id'], agent)
 
+    def test_create_ha_port_and_bind_wont_create_redundant_ports(self):
+        # When migrating from HA to DVR+HA router, create_ha_port_and_bind
+        # should create only one network:router_ha_interface port on a router
+        # when binding to same agent. So we need only one agent for testing
+        # (preferably with dvr_snat mode).
+        for agent in self.adminContext.session.query(
+            agent_model.Agent).all():
+            agent.admin_state_up = False
+        l3_dvr_snat_agent = helpers.register_l3_agent(
+            'fake_l3_host_dvr_snat', constants.L3_AGENT_MODE_DVR_SNAT)
+        router = self._create_ha_router(tenant_id='foo_tenant')
+        self.plugin.schedule_router(self.adminContext, router['id'])
+        router['admin_state_up'] = False
+        updated_router1 = self.plugin.update_router(
+            self.adminContext, router['id'], {'router': router})
+        updated_router1['distributed'] = True
+        self.plugin.update_router(
+            self.adminContext, router['id'], {'router': updated_router1})
+
+        self.plugin.router_scheduler.create_ha_port_and_bind(
+            self.plugin, self.adminContext, router['id'],
+            router['tenant_id'], l3_dvr_snat_agent)
+        filters = {'device_owner': ['network:router_ha_interface'],
+                   'device_id': [router['id']]}
+        self.core_plugin = directory.get_plugin()
+        ports = self.core_plugin.get_ports(
+            self.adminContext, filters=filters)
+        self.assertEqual(1, len(ports))
+
     def test_create_ha_port_and_bind_catch_router_not_found(self):
         router = self._create_ha_router(tenant_id='foo_tenant')
         self.plugin.schedule_router(self.adminContext, router['id'])
@@ -1395,10 +1405,13 @@ class L3HATestCaseMixin(testlib_api.SqlTestCase,
         with mock.patch.object(self.plugin.router_scheduler, 'bind_router'):
             with mock.patch.object(
                     self.plugin, 'add_ha_port',
-                    side_effect=l3.RouterNotFound(router_id='foo_router')):
+                    side_effect=l3.RouterNotFound(router_id='foo_router')),\
+                    mock.patch.object(
+                        self.plugin, 'safe_delete_ha_network') as sd_ha_net:
                 self.plugin.router_scheduler.create_ha_port_and_bind(
                     self.plugin, self.adminContext,
                     router['id'], router['tenant_id'], agent)
+                self.assertTrue(sd_ha_net.called)
 
     def test_create_ha_port_and_bind_bind_router_returns_None(self):
         router = self._create_ha_router(tenant_id='foo_tenant')
@@ -1631,11 +1644,9 @@ class L3AgentSchedulerDbMixinTestCase(L3HATestCaseMixin):
         agent = agents.pop()
         self.plugin.remove_router_from_l3_agent(
             self.adminContext, agent.id, router['id'])
-        session = self.adminContext.session
-        db = l3ha_model.L3HARouterAgentPortBinding
-        results = session.query(db).filter_by(
-            router_id=router['id'])
-        results = [binding.l3_agent_id for binding in results.all()]
+        objs = l3_hamode.L3HARouterAgentPortBinding.get_objects(
+            self.adminContext, router_id=router['id'])
+        results = [binding.l3_agent_id for binding in objs]
         self.assertNotIn(agent.id, results)
 
     def test_add_ha_interface_to_l3_agent(self):
@@ -1827,67 +1838,90 @@ class L3HALeastRoutersSchedulerTestCase(L3HATestCaseMixin):
         self.assertIn(self.agent_id4, agent_ids)
 
 
-class TestGetL3AgentsWithAgentModeFilter(testlib_api.SqlTestCase,
-                                         L3SchedulerBaseMixin):
+class TestGetL3AgentsWithFilter(testlib_api.SqlTestCase,
+                                L3SchedulerBaseMixin):
     """Test cases to test get_l3_agents.
 
-    This class tests the L3AgentSchedulerDbMixin.get_l3_agents()
-    for the 'agent_mode' filter with various values.
-
-    5 l3 agents are registered in the order - legacy, dvr_snat, dvr, fake_mode
-    and legacy
+    6 l3 agents are registered in the order - legacy, dvr_snat, dvr,
+    dvr_no_external, fake_mode and legacy
     """
 
     scenarios = [
         ('no filter',
             dict(agent_modes=[],
+                 host=['host_1'],
                  expected_agent_modes=['legacy', 'dvr_snat', 'dvr',
-                                       'fake_mode', 'legacy'])),
+                                       'dvr_no_external', 'fake_mode',
+                                       'legacy'],
+                 expected_host=['host_1'])),
 
         ('legacy',
             dict(agent_modes=['legacy'],
-                 expected_agent_modes=['legacy', 'legacy'])),
+                 host=['host_1'],
+                 expected_agent_modes=['legacy', 'legacy'],
+                 expected_host=['host_1'])),
 
         ('dvr_snat',
             dict(agent_modes=['dvr_snat'],
-                 expected_agent_modes=['dvr_snat'])),
+                 host=['host_2'],
+                 expected_agent_modes=['dvr_snat'],
+                 expected_host=['host_2'])),
 
-        ('dvr ',
+        ('dvr',
             dict(agent_modes=['dvr'],
-                 expected_agent_modes=['dvr'])),
+                 host=['host_3'],
+                 expected_agent_modes=['dvr'],
+                 expected_host=['host_3'])),
 
-        ('legacy and dvr snat',
-            dict(agent_modes=['legacy', 'dvr_snat', 'legacy'],
-                 expected_agent_modes=['legacy', 'dvr_snat', 'legacy'])),
-
-        ('legacy and dvr',
-            dict(agent_modes=['legacy', 'dvr'],
-                 expected_agent_modes=['legacy', 'dvr', 'legacy'])),
+        ('dvr_no_external',
+            dict(agent_modes=['dvr_no_external'],
+                 host=['host_4'],
+                 expected_agent_modes=['dvr_no_external'],
+                 expected_host=['host_4'])),
 
         ('dvr_snat and dvr',
             dict(agent_modes=['dvr_snat', 'dvr'],
-                 expected_agent_modes=['dvr_snat', 'dvr'])),
+                 host=['host_5'],
+                 expected_agent_modes=['dvr_snat', 'dvr'],
+                 expected_host=['host_5'])),
 
-        ('legacy, dvr_snat and dvr',
-            dict(agent_modes=['legacy', 'dvr_snat', 'dvr'],
-                 expected_agent_modes=['legacy', 'dvr_snat', 'dvr',
-                                       'legacy'])),
+        ('dvr_snat and dvr_no_external',
+            dict(agent_modes=['dvr_snat', 'dvr_no_external'],
+                 host=['host_5'],
+                 expected_agent_modes=['dvr_snat', 'dvr_no_external'],
+                 expected_host=['host_5'])),
+
+        ('dvr_snat, dvr and dvr_no_external',
+            dict(agent_modes=['dvr_snat', 'dvr', 'dvr_no_external'],
+                 host=['host_6'],
+                 expected_agent_modes=['dvr_snat', 'dvr', 'dvr_no_external'],
+                 expected_host=['host_6'])),
 
         ('invalid',
             dict(agent_modes=['invalid'],
-                 expected_agent_modes=[])),
+                 host=['host_invalid'],
+                 expected_agent_modes=[],
+                 expected_host=[])),
     ]
 
     def setUp(self):
-        super(TestGetL3AgentsWithAgentModeFilter, self).setUp()
+        super(TestGetL3AgentsWithFilter, self).setUp()
         self.plugin = L3HAPlugin()
         self.setup_coreplugin('ml2')
         self.adminContext = n_context.get_admin_context()
-        hosts = ['host_1', 'host_2', 'host_3', 'host_4', 'host_5']
-        agent_modes = ['legacy', 'dvr_snat', 'dvr', 'fake_mode', 'legacy']
+        hosts = ['host_1', 'host_2', 'host_3', 'host_4', 'host_5', 'host_6']
+        agent_modes = ['legacy', 'dvr_snat', 'dvr', 'dvr_no_external',
+                       'fake_mode', 'legacy']
         for host, agent_mode in zip(hosts, agent_modes):
             helpers.register_l3_agent(host, agent_mode)
 
+
+class TestGetL3AgentsWithAgentModeFilter(TestGetL3AgentsWithFilter):
+    """Test cases to test get_l3_agents 'agent_mode'.
+
+    This class tests the L3AgentSchedulerDbMixin.get_l3_agents()
+    for the 'agent_mode' filter with various values.
+    """
     def _get_agent_mode(self, agent):
         agent_conf = self.plugin.get_configuration_dict(agent)
         return agent_conf.get('agent_mode', 'None')
@@ -1898,7 +1932,25 @@ class TestGetL3AgentsWithAgentModeFilter(testlib_api.SqlTestCase,
         self.assertEqual(len(self.expected_agent_modes), len(l3_agents))
         returned_agent_modes = [self._get_agent_mode(agent)
                                 for agent in l3_agents]
-        self.assertEqual(self.expected_agent_modes, returned_agent_modes)
+        self.assertItemsEqual(self.expected_agent_modes, returned_agent_modes)
+
+
+class TestGetL3AgentsWithHostFilter(TestGetL3AgentsWithFilter):
+    """Test cases to test get_l3_agents 'hosts'.
+
+    This class tests the L3AgentSchedulerDbMixin.get_l3_agents()
+    for the 'host' filter with various values.
+    """
+    def _get_host(self, agent):
+        return agent.get('host', 'None')
+
+    def test_get_l3_agents(self):
+        l3_agents = self.plugin.get_l3_agents(
+            self.adminContext, filters={'host': self.host})
+        self.assertEqual(len(self.expected_host), len(l3_agents))
+        returned_host = [self._get_host(agent)
+                         for agent in l3_agents]
+        self.assertEqual(self.expected_host, returned_host)
 
 
 class L3AgentAZLeastRoutersSchedulerTestCase(L3HATestCaseMixin):

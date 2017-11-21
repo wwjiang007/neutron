@@ -26,8 +26,6 @@ FAKE_ID_2 = _uuid()
 
 
 class TestExclusiveRouterProcessor(base.BaseTestCase):
-    def setUp(self):
-        super(TestExclusiveRouterProcessor, self).setUp()
 
     def test_i_am_master(self):
         master = l3_queue.ExclusiveRouterProcessor(FAKE_ID)
@@ -101,3 +99,13 @@ class TestExclusiveRouterProcessor(base.BaseTestCase):
             raise Exception("Only the master should process a router")
 
         self.assertEqual(2, len([i for i in master.updates()]))
+
+    def test_hit_retry_limit(self):
+        tries = 1
+        queue = l3_queue.RouterProcessingQueue()
+        update = l3_queue.RouterUpdate(FAKE_ID, l3_queue.PRIORITY_RPC,
+                                       tries=tries)
+        queue.add(update)
+        self.assertFalse(update.hit_retry_limit())
+        queue.add(update)
+        self.assertTrue(update.hit_retry_limit())

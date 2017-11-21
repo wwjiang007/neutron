@@ -20,6 +20,7 @@
       '''''''  Heading 4
       (Avoid deeper levels because they do not render well.)
 
+.. _testing_neutron:
 
 Testing Neutron
 ===============
@@ -49,17 +50,17 @@ We will talk about three classes of tests: unit, functional and integration.
 Each respective category typically targets a larger scope of code. Other than
 that broad categorization, here are a few more characteristic:
 
-  * Unit tests - Should be able to run on your laptop, directly following a
-    'git clone' of the project. The underlying system must not be mutated,
-    mocks can be used to achieve this. A unit test typically targets a function
-    or class.
-  * Functional tests - Run against a pre-configured environment
-    (tools/configure_for_func_testing.sh). Typically test a component
-    such as an agent using no mocks.
-  * Integration tests - Run against a running cloud, often target the API level,
-    but also 'scenarios' or 'user stories'. You may find such tests under
-    tests/tempest/api, tests/tempest/scenario, tests/fullstack, and in the
-    Tempest and Rally projects.
+* Unit tests - Should be able to run on your laptop, directly following a
+  'git clone' of the project. The underlying system must not be mutated,
+  mocks can be used to achieve this. A unit test typically targets a function
+  or class.
+* Functional tests - Run against a pre-configured environment
+  (tools/configure_for_func_testing.sh). Typically test a component
+  such as an agent using no mocks.
+* Integration tests - Run against a running cloud, often target the API level,
+  but also 'scenarios' or 'user stories'. You may find such tests under
+  tests/tempest/api, tests/tempest/scenario, tests/fullstack, and in the
+  Tempest and Rally projects.
 
 Tests in the Neutron tree are typically organized by the testing infrastructure
 used, and not by the scope of the test. For example, many tests under the
@@ -368,16 +369,37 @@ Tests for other resources should be contributed to the Neutron repository.
 Scenario tests should be similarly split up between Tempest and Neutron
 according to the API they're targeting.
 
+To create an API test, the testing class must at least inherit from
+neutron.tests.tempest.api.base.BaseNetworkTest base class. As some of tests
+may require certain extensions to be enabled, the base class provides
+``required_extensions`` class attribute which can be used by subclasses to
+define a list of required extensions for particular test class.
+
 Scenario Tests
 ~~~~~~~~~~~~~~
 
 Scenario tests (neutron/tests/tempest/scenario), like API tests, use the
 Tempest test infrastructure and have the same requirements. Guidelines for
 writing a good scenario test may be found at the Tempest developer guide:
-http://docs.openstack.org/developer/tempest/field_guide/scenario.html
+https://docs.openstack.org/tempest/latest/field_guide/scenario.html
 
 Scenario tests, like API tests, are split between the Tempest and Neutron
 repositories according to the Neutron API the test is targeting.
+
+Some scenario tests require advanced ``Glance`` images (for example, ``Ubuntu``
+or ``CentOS``) in order to pass. Those tests are skipped by default. To enable
+them, include the following in ``tempest.conf``:
+
+   .. code-block:: ini
+
+      [compute]
+      image_ref = <uuid of advanced image>
+      [neutron_plugin_options]
+      image_is_advanced = True
+
+Specific test requirements for advanced images are:
+
+#. ``test_trunk`` requires ``802.11q`` kernel module loaded.
 
 Rally Tests
 ~~~~~~~~~~~
@@ -462,9 +484,7 @@ the tracking of long-running tests and other things.
 
 For more information on the standard Tox-based test infrastructure used by
 OpenStack and how to do some common test/debugging procedures with Testr,
-see this wiki page:
-
-  https://wiki.openstack.org/wiki/Testr
+see this wiki page: https://wiki.openstack.org/wiki/Testr
 
 .. _Testr: https://wiki.openstack.org/wiki/Testr
 .. _tox: http://tox.readthedocs.org/en/latest/
@@ -532,10 +552,8 @@ When running full-stack tests on a clean VM for the first time, we
 advise to run ./stack.sh successfully to make sure all Neutron's
 dependencies are met. Full-stack based Neutron daemons produce logs to a
 sub-folder in /opt/stack/logs/dsvm-fullstack-logs (for example, a test named
-"test_example" will produce logs to /opt/stack/logs/dsvm-fullstack-logs/test_example/),
+"test_example" will produce logs to /opt/stack/logs/dsvm-fullstack-logs/test_example.log),
 so that will be a good place to look if your test is failing.
-Logging from the test infrastructure itself is placed in:
-/opt/stack/logs/dsvm-fullstack-logs/test_example.log.
 Fullstack test suite assumes 240.0.0.0/4 (Class E) range in root namespace of
 the test machine is available for its usage.
 
@@ -566,7 +584,8 @@ For example, the following would run only a single test or test case::
       $ tox -e py27 neutron.tests.unit.test_manager.NeutronManagerTestCase.test_service_plugin_is_loaded
 
 If you want to pass other arguments to ostestr, you can do the following::
-      $ tox -e -epy27 -- --regex neutron.tests.unit.test_manager --serial
+
+      $ tox -e py27 -- --regex neutron.tests.unit.test_manager --serial
 
 
 Coverage
@@ -586,10 +605,10 @@ doc/source/devref/testing_coverage.rst. You could also rely on Zuul
 logs, that are generated post-merge (not every project builds coverage
 results). To access them, do the following:
 
-  * Check out the latest `merge commit <https://review.openstack.org/gitweb?p=openstack/neutron.git;a=search;s=Jenkins;st=author>`_
-  * Go to: http://logs.openstack.org/<first-2-digits-of-sha1>/<sha1>/post/neutron-coverage/.
-  * `Spec <https://review.openstack.org/#/c/221494/>`_ is a work in progress to
-    provide a better landing page.
+* Check out the latest `merge commit <https://review.openstack.org/gitweb?p=openstack/neutron.git;a=search;s=Jenkins;st=author>`_
+* Go to: http://logs.openstack.org/<first-2-digits-of-sha1>/<sha1>/post/neutron-coverage/.
+* `Spec <https://review.openstack.org/#/c/221494/>`_ is a work in progress to
+  provide a better landing page.
 
 Debugging
 ---------
@@ -626,6 +645,4 @@ TBD: how to do this with tox.
 References
 ~~~~~~~~~~
 
-.. [#pudb] PUDB debugger:
-   https://pypi.python.org/pypi/pudb
 .. _file-based-sqlite: http://lists.openstack.org/pipermail/openstack-dev/2016-July/099861.html

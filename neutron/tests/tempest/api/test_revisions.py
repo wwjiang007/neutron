@@ -12,8 +12,9 @@
 
 import netaddr
 
+from tempest.common import utils
 from tempest.lib import decorators
-from tempest import test
+from tempest.lib import exceptions
 
 from neutron.tests.tempest.api import base
 from neutron.tests.tempest.api import base_security_groups as bsg
@@ -22,10 +23,7 @@ from neutron.tests.tempest import config
 
 class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
 
-    @classmethod
-    @test.requires_ext(extension="standard-attr-revisions", service="network")
-    def skip_checks(cls):
-        super(TestRevisions, cls).skip_checks()
+    required_extensions = ['standard-attr-revisions']
 
     @decorators.idempotent_id('4a26a4be-9c53-483c-bc50-b53f1db10ac6')
     def test_update_network_bumps_revision(self):
@@ -35,6 +33,35 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
         updated = self.client.update_network(net['id'], name='newnet')
         self.assertGreater(updated['network']['revision_number'],
                            net['revision_number'])
+
+    @decorators.idempotent_id('4a26a4be-9c53-483c-bc50-b11111113333')
+    def test_update_network_constrained_by_revision(self):
+        net = self.create_network()
+        current = net['revision_number']
+        stale = current - 1
+        # using a stale number should fail
+        self.assertRaises(
+            exceptions.PreconditionFailed,
+            self.client.update_network,
+            net['id'], name='newnet',
+            headers={'If-Match': 'revision_number=%s' % stale}
+        )
+
+        # using current should pass. in case something is updating the network
+        # on the server at the same time, we have to re-read and update to be
+        # safe
+        for i in range(100):
+            current = (self.client.show_network(net['id'])
+                       ['network']['revision_number'])
+            try:
+                self.client.update_network(
+                    net['id'], name='newnet',
+                    headers={'If-Match': 'revision_number=%s' % current})
+            except exceptions.UnexpectedResponseCode:
+                continue
+            break
+        else:
+            self.fail("Failed to update network after 100 tries.")
 
     @decorators.idempotent_id('cac7ecde-12d5-4331-9a03-420899dea077')
     def test_update_port_bumps_revision(self):
@@ -82,7 +109,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            updated['network']['revision_number'])
 
     @decorators.idempotent_id('6c256f71-c929-4200-b3dc-4e1843506be5')
-    @test.requires_ext(extension="security-group", service="network")
+    @utils.requires_ext(extension="security-group", service="network")
     def test_update_sg_group_bumps_revision(self):
         sg, name = self._create_security_group()
         self.assertIn('revision_number', sg['security_group'])
@@ -92,7 +119,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            sg['security_group']['revision_number'])
 
     @decorators.idempotent_id('6489632f-8550-4453-a674-c98849742967')
-    @test.requires_ext(extension="security-group", service="network")
+    @utils.requires_ext(extension="security-group", service="network")
     def test_update_port_sg_binding_bumps_revision(self):
         net = self.create_network()
         self.addCleanup(self.client.delete_network, net['id'])
@@ -109,7 +136,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            updated['port']['revision_number'])
 
     @decorators.idempotent_id('29c7ab2b-d1d8-425d-8cec-fcf632960f22')
-    @test.requires_ext(extension="security-group", service="network")
+    @utils.requires_ext(extension="security-group", service="network")
     def test_update_sg_rule_bumps_sg_revision(self):
         sg, name = self._create_security_group()
         rule = self.client.create_security_group_rule(
@@ -126,7 +153,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            updated['security_group']['revision_number'])
 
     @decorators.idempotent_id('db70c285-0365-4fac-9f55-2a0ad8cf55a8')
-    @test.requires_ext(extension="allowed-address-pairs", service="network")
+    @utils.requires_ext(extension="allowed-address-pairs", service="network")
     def test_update_allowed_address_pairs_bumps_revision(self):
         net = self.create_network()
         self.addCleanup(self.client.delete_network, net['id'])
@@ -142,7 +169,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            updated['port']['revision_number'])
 
     @decorators.idempotent_id('a21ec3b4-3569-4b77-bf29-4177edaa2df5')
-    @test.requires_ext(extension="extra_dhcp_opt", service="network")
+    @utils.requires_ext(extension="extra_dhcp_opt", service="network")
     def test_update_extra_dhcp_opt_bumps_revision(self):
         net = self.create_network()
         self.addCleanup(self.client.delete_network, net['id'])
@@ -159,7 +186,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            updated['port']['revision_number'])
 
     @decorators.idempotent_id('40ba648f-f374-4c29-a5b7-489dd5a38a4e')
-    @test.requires_ext(extension="dns-integration", service="network")
+    @utils.requires_ext(extension="dns-integration", service="network")
     def test_update_dns_domain_bumps_revision(self):
         net = self.create_network(dns_domain='example.test.')
         self.addCleanup(self.client.delete_network, net['id'])
@@ -178,8 +205,8 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            updated['port']['revision_number'])
 
     @decorators.idempotent_id('8482324f-cf59-4d73-b98e-d37119255300')
-    @test.requires_ext(extension="router", service="network")
-    @test.requires_ext(extension="extraroute", service="network")
+    @utils.requires_ext(extension="router", service="network")
+    @utils.requires_ext(extension="extraroute", service="network")
     def test_update_router_extra_routes_bumps_revision(self):
         net = self.create_network()
         self.addCleanup(self.client.delete_network, net['id'])
@@ -203,7 +230,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            updated['router']['revision_number'])
 
     @decorators.idempotent_id('6bd18702-e25a-4b4b-8c0c-680113533511')
-    @test.requires_ext(extension="subnet-service-types", service="network")
+    @utils.requires_ext(extension="subnet-service-types", service="network")
     def test_update_subnet_service_types_bumps_revisions(self):
         net = self.create_network()
         self.addCleanup(self.client.delete_network, net['id'])
@@ -219,7 +246,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            updated['subnet']['revision_number'])
 
     @decorators.idempotent_id('9c83105c-9973-45ff-9ca2-e66d64700abe')
-    @test.requires_ext(extension="port-security", service="network")
+    @utils.requires_ext(extension="port-security", service="network")
     def test_update_port_security_bumps_revisions(self):
         net = self.create_network(port_security_enabled=False)
         self.addCleanup(self.client.delete_network, net['id'])
@@ -243,7 +270,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            updated['port']['revision_number'])
 
     @decorators.idempotent_id('68d5ac3a-11a1-4847-8e2e-5843c043d89b')
-    @test.requires_ext(extension="binding", service="network")
+    @utils.requires_ext(extension="binding", service="network")
     def test_portbinding_bumps_revision(self):
         net = self.create_network()
         self.addCleanup(self.client.delete_network, net['id'])
@@ -257,7 +284,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            port['revision_number'])
 
     @decorators.idempotent_id('4a37bde9-1975-47e0-9b8c-2c9ca36415b0')
-    @test.requires_ext(extension="router", service="network")
+    @utils.requires_ext(extension="router", service="network")
     def test_update_router_bumps_revision(self):
         net = self.create_network()
         self.addCleanup(self.client.delete_network, net['id'])
@@ -280,8 +307,8 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            router['revision_number'])
 
     @decorators.idempotent_id('9de71ebc-f5df-4cd0-80bc-60299fce3ce9')
-    @test.requires_ext(extension="router", service="network")
-    @test.requires_ext(extension="standard-attr-description",
+    @utils.requires_ext(extension="router", service="network")
+    @utils.requires_ext(extension="standard-attr-description",
                        service="network")
     def test_update_floatingip_bumps_revision(self):
         ext_id = config.CONF.network.public_network_id
@@ -312,8 +339,8 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
         self.client.update_floatingip(b2['floatingip']['id'], port_id=None)
 
     @decorators.idempotent_id('afb6486c-41b5-483e-a500-3c506f4deb49')
-    @test.requires_ext(extension="router", service="network")
-    @test.requires_ext(extension="l3-ha", service="network")
+    @utils.requires_ext(extension="router", service="network")
+    @utils.requires_ext(extension="l3-ha", service="network")
     def test_update_router_extra_attributes_bumps_revision(self):
         # updates from CVR to CVR-HA are supported on every release,
         # but only the admin can forcibly create a non-HA router
@@ -333,10 +360,10 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            router['revision_number'])
 
     @decorators.idempotent_id('90743b00-b0e2-40e4-9524-1c884fe3ef23')
-    @test.requires_ext(extension="external-net", service="network")
-    @test.requires_ext(extension="auto-allocated-topology", service="network")
-    @test.requires_ext(extension="subnet_allocation", service="network")
-    @test.requires_ext(extension="router", service="network")
+    @utils.requires_ext(extension="external-net", service="network")
+    @utils.requires_ext(extension="auto-allocated-topology", service="network")
+    @utils.requires_ext(extension="subnet_allocation", service="network")
+    @utils.requires_ext(extension="router", service="network")
     def test_update_external_network_bumps_revision(self):
         net = self.create_network()
         self.addCleanup(self.client.delete_network, net['id'])
@@ -347,7 +374,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            net['revision_number'])
 
     @decorators.idempotent_id('5af6450a-0f61-49c3-b628-38db77c7b856')
-    @test.requires_ext(extension="qos", service="network")
+    @utils.requires_ext(extension="qos", service="network")
     def test_update_qos_port_policy_binding_bumps_revision(self):
         policy = self.create_qos_policy(name='port-policy', shared=False)
         net = self.create_network()
@@ -360,7 +387,7 @@ class TestRevisions(base.BaseAdminNetworkTest, bsg.BaseSecGroupTest):
                            port['revision_number'])
 
     @decorators.idempotent_id('817da343-c6e4-445c-9519-a621f124dfbe')
-    @test.requires_ext(extension="qos", service="network")
+    @utils.requires_ext(extension="qos", service="network")
     def test_update_qos_network_policy_binding_bumps_revision(self):
         policy = self.create_qos_policy(name='network-policy', shared=False)
         network = self.create_network()

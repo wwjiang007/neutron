@@ -20,6 +20,7 @@ import netaddr
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib.plugins.ml2 import api
 from oslo_utils import uuidutils
 from sqlalchemy.orm import exc
 from sqlalchemy.orm import query
@@ -32,7 +33,6 @@ from neutron.db import segments_db
 from neutron.objects import network as network_obj
 from neutron.objects import ports as port_obj
 from neutron.plugins.ml2 import db as ml2_db
-from neutron.plugins.ml2 import driver_api as api
 from neutron.plugins.ml2 import models
 from neutron.tests.unit import testlib_api
 
@@ -177,6 +177,33 @@ class Ml2DBTestCase(testlib_api.SqlTestCase):
                                                     segment_uuid)
         self.assertIsNone(net_segment)
 
+    def test_get_dynamic_segment(self):
+        net_id = uuidutils.generate_uuid()
+        segment1 = {api.NETWORK_TYPE: 'vlan',
+                    api.PHYSICAL_NETWORK: 'physnet1',
+                    api.SEGMENTATION_ID: 1}
+
+        self._create_segments(
+            [segment1], is_seg_dynamic=True, network_id=net_id)
+
+        segs1 = segments_db.get_dynamic_segment(
+            self.ctx, net_id)
+        self.assertEqual('vlan', segs1[api.NETWORK_TYPE])
+        self.assertEqual('physnet1', segs1[api.PHYSICAL_NETWORK])
+        self.assertEqual(1, segs1[api.SEGMENTATION_ID])
+
+        segs2 = segments_db.get_dynamic_segment(
+            self.ctx, net_id, physical_network='physnet1')
+        self.assertEqual('vlan', segs2[api.NETWORK_TYPE])
+        self.assertEqual('physnet1', segs2[api.PHYSICAL_NETWORK])
+        self.assertEqual(1, segs2[api.SEGMENTATION_ID])
+
+        segs3 = segments_db.get_dynamic_segment(
+            self.ctx, net_id, segmentation_id=1)
+        self.assertEqual('vlan', segs3[api.NETWORK_TYPE])
+        self.assertEqual('physnet1', segs3[api.PHYSICAL_NETWORK])
+        self.assertEqual(1, segs3[api.SEGMENTATION_ID])
+
     def test_add_port_binding(self):
         network_id = uuidutils.generate_uuid()
         port_id = uuidutils.generate_uuid()
@@ -255,28 +282,6 @@ class Ml2DBTestCase(testlib_api.SqlTestCase):
         observed_port = ml2_db.get_port_from_device_mac(self.ctx,
                                                         port['mac_address'])
         self.assertEqual(port_id, observed_port.id)
-
-    def test_get_locked_port_and_binding(self):
-        network_id = uuidutils.generate_uuid()
-        port_id = uuidutils.generate_uuid()
-        host = 'fake_host'
-        vif_type = portbindings.VIF_TYPE_UNBOUND
-        self._setup_neutron_network(network_id)
-        self._setup_neutron_port(network_id, port_id)
-        self._setup_neutron_portbinding(port_id, vif_type, host)
-
-        port, binding = ml2_db.get_locked_port_and_binding(self.ctx,
-                                                           port_id)
-        self.assertEqual(port_id, port.id)
-        self.assertEqual(port_id, binding.port_id)
-
-    def test_get_locked_port_and_binding_result_not_found(self):
-        port_id = uuidutils.generate_uuid()
-
-        port, binding = ml2_db.get_locked_port_and_binding(self.ctx,
-                                                           port_id)
-        self.assertIsNone(port)
-        self.assertIsNone(binding)
 
 
 class Ml2DvrDBTestCase(testlib_api.SqlTestCase):

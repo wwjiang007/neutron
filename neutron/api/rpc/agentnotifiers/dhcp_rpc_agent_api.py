@@ -22,8 +22,6 @@ from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
 
-from neutron._i18n import _LE, _LW
-from neutron.common import constants as n_const
 from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils
@@ -37,7 +35,7 @@ class DhcpAgentNotifyAPI(object):
 
     This class implements the client side of an rpc interface.  The server side
     is neutron.agent.dhcp.agent.DhcpAgent.  For more information about changing
-    rpc interfaces, please see doc/source/devref/rpc_api.rst.
+    rpc interfaces, please see doc/source/contributor/internals/rpc_api.rst.
     """
     # It seems dhcp agent does not support bulk operation
     VALID_RESOURCES = ['network', 'subnet', 'port']
@@ -105,9 +103,9 @@ class DhcpAgentNotifyAPI(object):
                     context, 'network_create_end',
                     {'network': {'id': network['id']}}, agent['host'])
         elif not existing_agents:
-            LOG.warning(_LW('Unable to schedule network %s: no agents '
-                            'available; will retry on subsequent port '
-                            'and subnet creation events.'),
+            LOG.warning('Unable to schedule network %s: no agents '
+                        'available; will retry on subsequent port '
+                        'and subnet creation events.',
                         network['id'])
         return new_agents + existing_agents
 
@@ -123,10 +121,10 @@ class DhcpAgentNotifyAPI(object):
         len_enabled_agents = len(enabled_agents)
         len_active_agents = len(active_agents)
         if len_active_agents < len_enabled_agents:
-            LOG.warning(_LW("Only %(active)d of %(total)d DHCP agents "
-                            "associated with network '%(net_id)s' "
-                            "are marked as active, so notifications "
-                            "may be sent to inactive agents."),
+            LOG.warning("Only %(active)d of %(total)d DHCP agents "
+                        "associated with network '%(net_id)s' "
+                        "are marked as active, so notifications "
+                        "may be sent to inactive agents.",
                         {'active': len_active_agents,
                          'total': len_enabled_agents,
                          'net_id': network_id})
@@ -136,16 +134,16 @@ class DhcpAgentNotifyAPI(object):
             notification_required = (
                 num_ports > 0 and len(network['subnets']) >= 1)
             if notification_required:
-                LOG.error(_LE("Will not send event %(method)s for network "
-                              "%(net_id)s: no agent available. Payload: "
-                              "%(payload)s"),
+                LOG.error("Will not send event %(method)s for network "
+                          "%(net_id)s: no agent available. Payload: "
+                          "%(payload)s",
                           {'method': method,
                            'net_id': network_id,
                            'payload': payload})
         return enabled_agents
 
     def _is_reserved_dhcp_port(self, port):
-        return port.get('device_id') == n_const.DEVICE_ID_RESERVED_DHCP_PORT
+        return port.get('device_id') == constants.DEVICE_ID_RESERVED_DHCP_PORT
 
     def _notify_agents(self, context, method, payload, network_id):
         """Notify all the agents that are hosting the network."""

@@ -18,45 +18,45 @@ from keystoneauth1 import loading as ks_loading
 from oslo_config import cfg
 
 import neutron.agent.agent_extensions_manager
-import neutron.agent.linux.interface
-import neutron.agent.linux.pd
-import neutron.agent.linux.ra
-import neutron.agent.ovsdb.api
 import neutron.agent.securitygroups_rpc
 import neutron.common.cache_utils
 import neutron.conf.agent.agent_extensions_manager
 import neutron.conf.agent.common
+import neutron.conf.agent.database.agents_db
+import neutron.conf.agent.database.agentschedulers_db
 import neutron.conf.agent.dhcp
 import neutron.conf.agent.l3.config
 import neutron.conf.agent.l3.ha
+import neutron.conf.agent.linux
 import neutron.conf.agent.metadata.config as meta_conf
 import neutron.conf.agent.ovs_conf
+import neutron.conf.agent.ovsdb_api
 import neutron.conf.agent.xenapi_conf
 import neutron.conf.cache_utils
 import neutron.conf.common
+import neutron.conf.db.dvr_mac_db
+import neutron.conf.db.extraroute_db
+import neutron.conf.db.l3_agentschedulers_db
+import neutron.conf.db.l3_dvr_db
+import neutron.conf.db.l3_gwmode_db
+import neutron.conf.db.l3_hamode_db
 import neutron.conf.extensions.allowedaddresspairs
+import neutron.conf.plugins.ml2.config
 import neutron.conf.plugins.ml2.drivers.agent
 import neutron.conf.plugins.ml2.drivers.driver_type
+import neutron.conf.plugins.ml2.drivers.l2pop
 import neutron.conf.plugins.ml2.drivers.linuxbridge
 import neutron.conf.plugins.ml2.drivers.macvtap
 import neutron.conf.plugins.ml2.drivers.mech_sriov.agent_common
 import neutron.conf.plugins.ml2.drivers.ovs_conf
 import neutron.conf.quota
 import neutron.conf.service
+import neutron.conf.services.logging
 import neutron.conf.services.metering_agent
 import neutron.conf.wsgi
-import neutron.db.agents_db
-import neutron.db.agentschedulers_db
-import neutron.db.dvr_mac_db
-import neutron.db.extraroute_db
-import neutron.db.l3_agentschedulers_db
-import neutron.db.l3_dvr_db
-import neutron.db.l3_gwmode_db
-import neutron.db.l3_hamode_db
 import neutron.db.migration.cli
 import neutron.extensions.l3
 import neutron.extensions.securitygroup
-import neutron.plugins.ml2.config
 import neutron.plugins.ml2.drivers.mech_sriov.agent.common.config
 import neutron.wsgi
 
@@ -111,14 +111,15 @@ def list_db_opts():
     return [
         ('DEFAULT',
          itertools.chain(
-             neutron.db.agents_db.AGENT_OPTS,
-             neutron.db.extraroute_db.extra_route_opts,
-             neutron.db.l3_gwmode_db.OPTS,
-             neutron.db.agentschedulers_db.AGENTS_SCHEDULER_OPTS,
-             neutron.db.dvr_mac_db.dvr_mac_address_opts,
-             neutron.db.l3_dvr_db.router_distributed_opts,
-             neutron.db.l3_agentschedulers_db.L3_AGENTS_SCHEDULER_OPTS,
-             neutron.db.l3_hamode_db.L3_HA_OPTS)
+             neutron.conf.agent.database.agents_db.AGENT_OPTS,
+             neutron.conf.db.extraroute_db.EXTRA_ROUTE_OPTS,
+             neutron.conf.db.l3_gwmode_db.L3GWMODE_OPTS,
+             neutron.conf.agent.database.agentschedulers_db
+                    .AGENTS_SCHEDULER_OPTS,
+             neutron.conf.db.dvr_mac_db.DVR_MAC_ADDRESS_OPTS,
+             neutron.conf.db.l3_dvr_db.ROUTER_DISTRIBUTED_OPTS,
+             neutron.conf.db.l3_agentschedulers_db.L3_AGENTS_SCHEDULER_OPTS,
+             neutron.conf.db.l3_hamode_db.L3_HA_OPTS)
          ),
         ('database',
          neutron.db.migration.cli.get_engine_config())
@@ -146,12 +147,15 @@ def list_base_agent_opts():
     return [
         ('DEFAULT',
          itertools.chain(
-             neutron.agent.linux.interface.OPTS,
-             neutron.conf.agent.common.INTERFACE_DRIVER_OPTS,
-             neutron.conf.agent.ovs_conf.OPTS)
+             neutron.conf.agent.common.INTERFACE_OPTS,
+             neutron.conf.agent.common.INTERFACE_DRIVER_OPTS)
          ),
         ('agent', neutron.conf.agent.common.AGENT_STATE_OPTS),
-        ('ovs', neutron.agent.ovsdb.api.OPTS),
+        ('ovs',
+         itertools.chain(
+             neutron.conf.agent.ovsdb_api.API_OPTS,
+             neutron.conf.agent.ovs_conf.OPTS)
+         ),
     ]
 
 
@@ -185,7 +189,9 @@ def list_linux_bridge_opts():
              AGENT_EXT_MANAGER_OPTS)
          ),
         ('securitygroup',
-         neutron.conf.agent.securitygroups_rpc.security_group_opts)
+         neutron.conf.agent.securitygroups_rpc.security_group_opts),
+        ('network_log',
+         neutron.conf.services.logging.log_driver_opts)
     ]
 
 
@@ -196,8 +202,8 @@ def list_l3_agent_opts():
              neutron.conf.agent.l3.config.OPTS,
              neutron.conf.service.service_opts,
              neutron.conf.agent.l3.ha.OPTS,
-             neutron.agent.linux.pd.OPTS,
-             neutron.agent.linux.ra.OPTS)
+             neutron.conf.agent.common.PD_DRIVER_OPTS,
+             neutron.conf.agent.common.RA_OPTS)
          ),
         ('agent',
          neutron.conf.agent.agent_extensions_manager.AGENT_EXT_MANAGER_OPTS),
@@ -237,7 +243,7 @@ def list_metering_agent_opts():
 def list_ml2_conf_opts():
     return [
         ('ml2',
-         neutron.plugins.ml2.config.ml2_opts),
+         neutron.conf.plugins.ml2.config.ml2_opts),
         ('ml2_type_flat',
          neutron.conf.plugins.ml2.drivers.driver_type.flat_opts),
         ('ml2_type_vlan',
@@ -249,7 +255,9 @@ def list_ml2_conf_opts():
         ('ml2_type_geneve',
          neutron.conf.plugins.ml2.drivers.driver_type.geneve_opts),
         ('securitygroup',
-         neutron.conf.agent.securitygroups_rpc.security_group_opts)
+         neutron.conf.agent.securitygroups_rpc.security_group_opts),
+        ('l2pop',
+         neutron.conf.plugins.ml2.drivers.l2pop.l2_population_options)
     ]
 
 
@@ -258,7 +266,7 @@ def list_ovs_opts():
         ('ovs',
          itertools.chain(
              neutron.conf.plugins.ml2.drivers.ovs_conf.ovs_opts,
-             neutron.agent.ovsdb.api.OPTS)
+             neutron.conf.agent.ovsdb_api.API_OPTS)
          ),
         ('agent',
          itertools.chain(
@@ -268,6 +276,8 @@ def list_ovs_opts():
          ),
         ('securitygroup',
          neutron.conf.agent.securitygroups_rpc.security_group_opts),
+        ('network_log',
+         neutron.conf.services.logging.log_driver_opts)
     ]
 
 

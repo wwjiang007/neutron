@@ -46,20 +46,7 @@ class RemoteResourceCacheTestCase(base.BaseTestCase):
         self.duck = OVOLikeThing(2)
         self.ctx = context.get_admin_context()
         self.rcache = resource_cache.RemoteResourceCache(rtypes)
-
-    def test_bulk_flood_cache(self):
-        with mock.patch('neutron.api.rpc.handlers.resources_rpc.'
-                        'ResourcesPullRpcApi') as rpc_pull_mock:
-            pull = rpc_pull_mock.return_value.bulk_pull
-            pull.side_effect = [[self.duck], [self.goose]]
-            self.rcache.bulk_flood_cache()
-            pull.assert_any_call(mock.ANY, 'duck')
-            pull.assert_any_call(mock.ANY, 'goose')
-            self.assertEqual(self.goose,
-                             self.rcache.get_resource_by_id('goose', 1))
-            self.assertEqual(self.duck,
-                             self.rcache.get_resource_by_id('duck', 2))
-            self.assertIsNone(self.rcache.get_resource_by_id('duck', 1))
+        self._pullmock = mock.patch.object(self.rcache, '_puller').start()
 
     def test_get_resource_by_id(self):
         self.rcache.record_resource_update(self.ctx, 'goose', self.goose)
@@ -67,13 +54,40 @@ class RemoteResourceCacheTestCase(base.BaseTestCase):
                          self.rcache.get_resource_by_id('goose', 1))
         self.assertIsNone(self.rcache.get_resource_by_id('goose', 2))
 
+    def test__flood_cache_for_query_pulls_once(self):
+        self.rcache._flood_cache_for_query('goose', id=(66, 67),
+                                           name=('a', 'b'))
+        self._pullmock.bulk_pull.assert_called_once_with(
+            mock.ANY, 'goose',
+            filter_kwargs={'id': (66, 67), 'name': ('a', 'b')})
+        self._pullmock.bulk_pull.reset_mock()
+        self.rcache._flood_cache_for_query('goose', id=(66, ), name=('a', ))
+        self.assertFalse(self._pullmock.called)
+        self.rcache._flood_cache_for_query('goose', id=(67, ), name=('b', ))
+        self.assertFalse(self._pullmock.called)
+        # querying by just ID should trigger a new call since ID+name is a more
+        # specific query
+        self.rcache._flood_cache_for_query('goose', id=(67, ))
+        self._pullmock.bulk_pull.assert_called_once_with(
+            mock.ANY, 'goose', filter_kwargs={'id': (67, )})
+
+    def test_bulk_pull_doesnt_wipe_out_newer_data(self):
+        self.rcache.record_resource_update(
+            self.ctx, 'goose', OVOLikeThing(1, revision_number=5))
+        updated = OVOLikeThing(1)
+        updated.revision_number = 1  # older revision number
+        self._pullmock.bulk_pull.return_value = [updated]
+        self.rcache._flood_cache_for_query('goose', id=(1,),)
+        self.assertEqual(
+             5, self.rcache.get_resource_by_id('goose', 1).revision_number)
+
     def test_get_resources(self):
         geese = [OVOLikeThing(3, size='large'), OVOLikeThing(5, size='medium'),
                  OVOLikeThing(4, size='large'), OVOLikeThing(6, size='small')]
         for goose in geese:
             self.rcache.record_resource_update(self.ctx, 'goose', goose)
-        is_large = {'size': 'large'}
-        is_small = {'size': 'small'}
+        is_large = {'size': ('large', )}
+        is_small = {'size': ('small', )}
         self.assertItemsEqual([geese[0], geese[2]],
                               self.rcache.get_resources('goose', is_large))
         self.assertItemsEqual([geese[3]],
@@ -139,6 +153,17 @@ class RemoteResourceCacheTestCase(base.BaseTestCase):
         self.assertEqual(2, len(received_kw))
         self.assertIsNone(received_kw[1]['existing'])
         self.assertEqual(4, received_kw[1]['resource_id'])
+
+    def test_record_resource_delete_ignores_dups(self):
+        received_kw = []
+        receiver = lambda *a, **k: received_kw.append(k)
+        registry.subscribe(receiver, 'goose', events.AFTER_DELETE)
+        self.rcache.record_resource_delete(self.ctx, 'goose', 3)
+        self.assertEqual(1, len(received_kw))
+        self.rcache.record_resource_delete(self.ctx, 'goose', 4)
+        self.assertEqual(2, len(received_kw))
+        self.rcache.record_resource_delete(self.ctx, 'goose', 3)
+        self.assertEqual(2, len(received_kw))
 
     def test_resource_change_handler(self):
         with mock.patch.object(resource_cache.RemoteResourceWatcher,

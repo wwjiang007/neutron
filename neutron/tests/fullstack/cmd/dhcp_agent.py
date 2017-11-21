@@ -26,15 +26,18 @@ from neutron.cmd.eventlet.agents import dhcp as dhcp_agent
 
 OPTS = [
     cfg.StrOpt('test_namespace_suffix', default='testprefix',
-               help=_("Suffix to append to all DHCP namespace names.")),
+               help="Suffix to append to all DHCP namespace names."),
 ]
+
+
+def _get_namespace_name(id_, suffix=None):
+    suffix = suffix or cfg.CONF.test_namespace_suffix
+    return "%s%s%s" % (linux_dhcp.NS_PREFIX, id_, suffix)
 
 
 def NetModel_init(self, d):
     super(linux_dhcp.NetModel, self).__init__(d)
-
-    self._ns_name = "%s%s%s" % (
-        linux_dhcp.NS_PREFIX, self.id, cfg.CONF.test_namespace_suffix)
+    self._ns_name = _get_namespace_name(self.id)
 
 
 @classmethod

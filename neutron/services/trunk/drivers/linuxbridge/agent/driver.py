@@ -17,7 +17,6 @@ from neutron_lib.callbacks import resources as local_resources
 from oslo_log import log as logging
 import oslo_messaging
 
-from neutron._i18n import _LE
 from neutron.api.rpc.callbacks import events
 from neutron.api.rpc.handlers import resources_rpc
 from neutron.services.trunk import constants as t_const
@@ -28,10 +27,9 @@ from neutron.services.trunk.rpc import agent as trunk_rpc
 LOG = logging.getLogger(__name__)
 
 
-def init_handler(resource, event, trigger, agent=None):
+def init_handler(resource, event, trigger, payload=None):
     """Handler for agent init event."""
-    if agent:
-        LinuxBridgeTrunkDriver()
+    LinuxBridgeTrunkDriver()
 
 
 @registry.has_registry_receivers
@@ -113,8 +111,7 @@ class LinuxBridgeTrunkDriver(trunk_rpc.TrunkSkeleton):
                 LOG.debug("Trunk %s removed during wiring", trunk.port_id)
                 return
             # something broke
-            LOG.exception(_LE("Failure setting up subports for %s"),
-                          trunk.port_id)
+            LOG.exception("Failure setting up subports for %s", trunk.port_id)
             self._tapi.set_trunk_status(context, trunk,
                                         t_const.DEGRADED_STATUS)
 
@@ -136,7 +133,7 @@ class _TrunkAPI(object):
         except resources_rpc.ResourceNotFound:
             return None
         except oslo_messaging.RemoteError as e:
-            if 'CallbackNotFound' not in str(e):
+            if e.exc_type != 'CallbackNotFound':
                 raise
             LOG.debug("Trunk plugin disabled on server. Assuming port %s is "
                       "not a trunk.", port_id)

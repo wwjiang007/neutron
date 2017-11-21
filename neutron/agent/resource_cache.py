@@ -36,6 +36,9 @@ class RemoteResourceCache(object):
         self.resource_types = resource_types
         self._cache_by_type_and_id = {rt: {} for rt in self.resource_types}
         self._deleted_ids_by_type = {rt: set() for rt in self.resource_types}
+        # track everything we've asked the server so we don't ask again
+        self._satisfied_server_queries = set()
+        self._puller = resources_rpc.ResourcesPullRpcApi()
 
     def _type_cache(self, rtype):
         if rtype not in self.resource_types:
@@ -45,23 +48,92 @@ class RemoteResourceCache(object):
     def start_watcher(self):
         self._watcher = RemoteResourceWatcher(self)
 
-    def bulk_flood_cache(self):
-        # TODO(kevinbenton): this fills the cache with *every* server record.
-        # make this more intelligent to only pull ports on host, then all
-        # networks and security groups for those ports, etc.
-        context = n_ctx.get_admin_context()
-        puller = resources_rpc.ResourcesPullRpcApi()
-        for rtype in self.resource_types:
-            for resource in puller.bulk_pull(context, rtype):
-                self._type_cache(rtype)[resource.id] = resource
-
     def get_resource_by_id(self, rtype, obj_id):
         """Returns None if it doesn't exist."""
+        if obj_id in self._deleted_ids_by_type[rtype]:
+            return None
+        cached_item = self._type_cache(rtype).get(obj_id)
+        if cached_item:
+            return cached_item
+        # try server in case object existed before agent start
+        self._flood_cache_for_query(rtype, id=(obj_id, ))
         return self._type_cache(rtype).get(obj_id)
 
+    def _flood_cache_for_query(self, rtype, **filter_kwargs):
+        """Load info from server for first query.
+
+        Queries the server if this is the first time a given query for
+        rtype has been issued.
+        """
+        query_ids = self._get_query_ids(rtype, filter_kwargs)
+        if query_ids.issubset(self._satisfied_server_queries):
+            # we've already asked the server this question so we don't
+            # ask directly again because any updates will have been
+            # pushed to us
+            return
+        context = n_ctx.get_admin_context()
+        resources = self._puller.bulk_pull(context, rtype,
+                                           filter_kwargs=filter_kwargs)
+        for resource in resources:
+            if self._is_stale(rtype, resource):
+                # if the server was slow enough to respond the object may have
+                # been updated already and pushed to us in another thread.
+                LOG.debug("Ignoring stale update for %s: %s", rtype, resource)
+                continue
+            self._type_cache(rtype)[resource.id] = resource
+        LOG.debug("%s resources returned for queries %s", len(resources),
+                  query_ids)
+        self._satisfied_server_queries.update(query_ids)
+
+    def _get_query_ids(self, rtype, filters):
+        """Turns filters for a given rypte into a set of query IDs.
+
+        This can result in multiple queries due to the nature of the query
+        processing on the server side. Since multiple values are treated as
+        an OR condition, a query for {'id': ('1', '2')} is equivalent
+        to a query for {'id': ('1',)} and {'id': ('2')}. This method splits
+        the former into the latter to ensure we aren't asking the server
+        something we already know.
+        """
+        query_ids = set()
+        for k, values in tuple(sorted(filters.items())):
+            if len(values) > 1:
+                for v in values:
+                    new_filters = filters.copy()
+                    new_filters[k] = (v, )
+                    query_ids.update(self._get_query_ids(rtype, new_filters))
+                break
+        else:
+            # no multiple value filters left so add an ID
+            query_ids.add((rtype, ) + tuple(sorted(filters.items())))
+        return query_ids
+
     def get_resources(self, rtype, filters):
-        """Find resources that match key:value in filters dict."""
-        match = lambda o: all(v == getattr(o, k) for k, v in filters.items())
+        """Find resources that match key:values in filters dict.
+
+        If the attribute on the object is a list, each value is checked if it
+        is in the list.
+
+        The values in the dicionary for a single key are matched in an OR
+        fashion.
+        """
+        self._flood_cache_for_query(rtype, **filters)
+
+        def match(obj):
+            for key, values in filters.items():
+                for value in values:
+                    attr = getattr(obj, key)
+                    if isinstance(attr, (list, tuple, set)):
+                        # attribute is a list so we check if value is in
+                        # list
+                        if value in attr:
+                            break
+                    elif value == attr:
+                        break
+                else:
+                    # no match found for this key
+                    return False
+            return True
         return self.match_resources_with_func(rtype, match)
 
     def match_resources_with_func(self, rtype, matcher):
@@ -105,8 +177,10 @@ class RemoteResourceCache(object):
                       rtype, resource.id)
             return
         if existing:
-            LOG.debug("Resource %s %s updated. Old fields: %s New fields: %s",
-                      rtype, existing.id,
+            LOG.debug("Resource %s %s updated (revision_number %s->%s). "
+                      "Old fields: %s New fields: %s",
+                      rtype, existing.id, existing.revision_number,
+                      resource.revision_number,
                       {f: existing.get(f) for f in changed_fields},
                       {f: resource.get(f) for f in changed_fields})
         else:
@@ -123,6 +197,9 @@ class RemoteResourceCache(object):
         LOG.debug("Resource %s deleted: %s", rtype, resource_id)
         # TODO(kevinbenton): we need a way to expire items from the set at
         # some TTL so it doesn't grow indefinitely with churn
+        if resource_id in self._deleted_ids_by_type[rtype]:
+            LOG.debug("Skipped duplicate delete event for %s", resource_id)
+            return
         self._deleted_ids_by_type[rtype].add(resource_id)
         existing = self._type_cache(rtype).pop(resource_id, None)
         # local notification for agent internals to subscribe to

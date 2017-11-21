@@ -16,6 +16,11 @@
 
 from keystoneauth1 import loading as ks_loading
 import netaddr
+from neutron_lib.api.definitions import ip_allocation as ipalloc_apidef
+from neutron_lib.api.definitions import l2_adjacency as l2adj_apidef
+from neutron_lib.api.definitions import network as net_def
+from neutron_lib.api.definitions import port as port_def
+from neutron_lib.api.definitions import subnet as subnet_def
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
@@ -26,15 +31,12 @@ from novaclient import exceptions as nova_exc
 from oslo_config import cfg
 from oslo_log import log
 
-from neutron._i18n import _, _LE, _LI
-from neutron.api.v2 import attributes
+from neutron._i18n import _
 from neutron.common import exceptions as n_exc
 from neutron.db import _resource_extend as resource_extend
 from neutron.db import api as db_api
 from neutron.db.models import segment as segment_model
 from neutron.db import models_v2
-from neutron.extensions import ip_allocation
-from neutron.extensions import l2_adjacency
 from neutron.extensions import segment
 from neutron.notifiers import batch_notifier
 from neutron.services.segments import db
@@ -55,13 +57,14 @@ class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
 
     _instance = None
 
-    supported_extension_aliases = ["segment", "ip_allocation", "l2_adjacency"]
+    supported_extension_aliases = ["segment", "ip_allocation",
+                                   l2adj_apidef.ALIAS]
 
     def __init__(self):
         self.nova_updater = NovaSegmentNotifier()
 
     @staticmethod
-    @resource_extend.extends([attributes.NETWORKS])
+    @resource_extend.extends([net_def.COLLECTION_NAME])
     def _extend_network_dict_binding(network_res, network_db):
         if not directory.get_plugin('segments'):
             return
@@ -70,23 +73,23 @@ class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
         #                    it's a thing.
         is_adjacent = (not network_db.subnets
                        or not network_db.subnets[0].segment_id)
-        network_res[l2_adjacency.L2_ADJACENCY] = is_adjacent
+        network_res[l2adj_apidef.L2_ADJACENCY] = is_adjacent
 
     @staticmethod
-    @resource_extend.extends([attributes.SUBNETS])
+    @resource_extend.extends([subnet_def.COLLECTION_NAME])
     def _extend_subnet_dict_binding(subnet_res, subnet_db):
         subnet_res['segment_id'] = subnet_db.get('segment_id')
 
     @staticmethod
-    @resource_extend.extends([attributes.PORTS])
+    @resource_extend.extends([port_def.COLLECTION_NAME])
     def _extend_port_dict_binding(port_res, port_db):
         if not directory.get_plugin('segments'):
             return
 
-        value = ip_allocation.IP_ALLOCATION_IMMEDIATE
+        value = ipalloc_apidef.IP_ALLOCATION_IMMEDIATE
         if port_db.get('ip_allocation'):
             value = port_db.get('ip_allocation')
-        port_res[ip_allocation.IP_ALLOCATION] = value
+        port_res[ipalloc_apidef.IP_ALLOCATION] = value
 
     @classmethod
     def get_instance(cls):
@@ -207,8 +210,8 @@ class NovaSegmentNotifier(object):
             except n_exc.PlacementInventoryUpdateConflict:
                 LOG.debug('Re-trying to update Nova IPv4 inventory for '
                           'routed network segment: %s', event.segment_id)
-        LOG.error(_LE('Failed to update Nova IPv4 inventory for routed '
-                  'network segment: %s'), event.segment_id)
+        LOG.error('Failed to update Nova IPv4 inventory for routed '
+                  'network segment: %s', event.segment_id)
 
     def _create_nova_inventory(self, segment_id, total, reserved,
                                segment_host_mappings):
@@ -324,16 +327,16 @@ class NovaSegmentNotifier(object):
             try:
                 aggregate_id = self._get_aggregate_id(segment_id)
             except n_exc.PlacementAggregateNotFound:
-                LOG.info(_LI('When adding host %(host)s, aggregate not found '
-                             'for routed network segment %(segment_id)s'),
+                LOG.info('When adding host %(host)s, aggregate not found '
+                         'for routed network segment %(segment_id)s',
                          {'host': event.host, 'segment_id': segment_id})
                 continue
 
             try:
                 self.n_client.aggregates.add_host(aggregate_id, event.host)
             except nova_exc.Conflict:
-                LOG.info(_LI('Host %(host)s already exists in aggregate for '
-                             'routed network segment %(segment_id)s'),
+                LOG.info('Host %(host)s already exists in aggregate for '
+                         'routed network segment %(segment_id)s',
                          {'host': event.host, 'segment_id': segment_id})
 
     @registry.receives(resources.PORT,

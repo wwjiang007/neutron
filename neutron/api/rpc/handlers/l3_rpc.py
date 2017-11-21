@@ -17,6 +17,7 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from neutron_lib import context as neutron_context
 from neutron_lib import exceptions
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -45,7 +46,8 @@ class L3RpcCallback(object):
     # 1.7 Added method delete_agent_gateway_port for DVR Routers
     # 1.8 Added address scope information
     # 1.9 Added get_router_ids
-    target = oslo_messaging.Target(version='1.9')
+    # 1.10 Added update_all_ha_network_port_statuses
+    target = oslo_messaging.Target(version='1.10')
 
     @property
     def plugin(self):
@@ -56,8 +58,39 @@ class L3RpcCallback(object):
     @property
     def l3plugin(self):
         if not hasattr(self, '_l3plugin'):
-            self._l3plugin = directory.get_plugin(constants.L3)
+            self._l3plugin = directory.get_plugin(plugin_constants.L3)
         return self._l3plugin
+
+    def update_all_ha_network_port_statuses(self, context, host):
+        """Set HA network port to DOWN for HA routers hosted on <host>
+
+        This will update HA network port status to down for all HA routers
+        hosted on <host>. This is needed to avoid l3 agent spawning keepalived
+        when l2 agent not yet wired the port. This can happen after a system
+        reboot that has wiped out flows, etc and the L2 agent hasn't started up
+        yet. The port will still be ACTIVE in the data model and the L3 agent
+        will use that info to mistakenly think that L2 network is ready.
+        By forcing into DOWN, we will require the L2 agent to essentially ack
+        that the port is indeed ACTIVE by reacting to the port update and
+        calling update_device_up.
+        """
+        if not utils.is_extension_supported(
+            self.plugin, constants.PORT_BINDING_EXT_ALIAS):
+            return
+        device_filter = {
+            'device_owner': [constants.DEVICE_OWNER_ROUTER_HA_INTF],
+            'status': [constants.PORT_STATUS_ACTIVE]}
+        ports = self.plugin.get_ports(context, filters=device_filter)
+        ha_ports = [p['id'] for p in ports
+                    if p.get(portbindings.HOST_ID) == host]
+        if not ha_ports:
+            return
+        LOG.debug("L3 agent on host %(host)s requested for fullsync, so "
+                  "setting HA network ports %(ha_ports)s status to DOWN.",
+                  {"host": host, "ha_ports": ha_ports})
+        for p in ha_ports:
+            self.plugin.update_port(
+                context, p, {'port': {'status': constants.PORT_STATUS_DOWN}})
 
     def get_router_ids(self, context, host):
         """Returns IDs of routers scheduled to l3 agent on <host>

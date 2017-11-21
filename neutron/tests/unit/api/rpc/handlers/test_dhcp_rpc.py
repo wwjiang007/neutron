@@ -18,11 +18,11 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import exceptions as n_exc
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_db import exception as db_exc
 
 from neutron.api.rpc.handlers import dhcp_rpc
-from neutron.common import constants as n_const
 from neutron.common import exceptions
 from neutron.common import utils
 from neutron.db import provisioning_blocks
@@ -34,7 +34,7 @@ class TestDhcpRpcCallback(base.BaseTestCase):
     def setUp(self):
         super(TestDhcpRpcCallback, self).setUp()
         self.plugin = mock.MagicMock()
-        directory.add_plugin(constants.CORE, self.plugin)
+        directory.add_plugin(plugin_constants.CORE, self.plugin)
         self.callbacks = dhcp_rpc.DhcpRpcCallback()
         self.log_p = mock.patch('neutron.api.rpc.handlers.dhcp_rpc.LOG')
         self.log = self.log_p.start()
@@ -64,8 +64,14 @@ class TestDhcpRpcCallback(base.BaseTestCase):
         self.plugin.get_subnets.return_value = [subnet]
         networks = self.callbacks.get_active_networks_info(mock.Mock(),
                                                            host='host')
-        expected = [{'id': 'a', 'subnets': [], 'ports': [port]},
-                    {'id': 'b', 'subnets': [subnet], 'ports': []}]
+        expected = [{'id': 'a',
+                     'non_local_subnets': [],
+                     'subnets': [],
+                     'ports': [port]},
+                    {'id': 'b',
+                     'non_local_subnets': [],
+                     'subnets': [subnet],
+                     'ports': []}]
         self.assertEqual(expected, networks)
 
     def test_get_active_networks_info_with_routed_networks(self):
@@ -81,8 +87,14 @@ class TestDhcpRpcCallback(base.BaseTestCase):
         self.plugin.get_subnets.return_value = subnets
         networks = self.callbacks.get_active_networks_info(mock.Mock(),
                                                            host='host')
-        expected = [{'id': 'a', 'subnets': [subnets[1]], 'ports': [port]},
-                    {'id': 'b', 'subnets': [subnets[0]], 'ports': []}]
+        expected = [{'id': 'a',
+                     'non_local_subnets': [],
+                     'subnets': [subnets[1]],
+                     'ports': [port]},
+                    {'id': 'b',
+                     'non_local_subnets': [subnets[2]],
+                     'subnets': [subnets[0]],
+                     'ports': []}]
         self.assertEqual(expected, networks)
 
     def _test__port_action_with_failures(self, exc=None, action=None):
@@ -164,7 +176,7 @@ class TestDhcpRpcCallback(base.BaseTestCase):
 
     def test_update_port_missing_port_on_update(self):
         self.plugin.get_port.return_value = {
-            'device_id': n_const.DEVICE_ID_RESERVED_DHCP_PORT}
+            'device_id': constants.DEVICE_ID_RESERVED_DHCP_PORT}
         self.plugin.update_port.side_effect = n_exc.PortNotFound(port_id='66')
         self.assertIsNone(self.callbacks.update_dhcp_port(
             context='ctx', host='host', port_id='66',
@@ -182,6 +194,7 @@ class TestDhcpRpcCallback(base.BaseTestCase):
             subnet_retval = [dict(id='a'), dict(id='c'), dict(id='b')]
         else:
             subnet_retval = [dict(id='c', segment_id='1'),
+                             dict(id='b', segment_id='2'),
                              dict(id='a', segment_id='1')]
         port_retval = mock.Mock()
 
@@ -195,12 +208,16 @@ class TestDhcpRpcCallback(base.BaseTestCase):
 
         retval = self.callbacks.get_network_info(mock.Mock(), network_id='a')
         self.assertEqual(retval, network_retval)
+        sorted_nonlocal_subnet_retval = []
         if not routed_network:
             sorted_subnet_retval = [dict(id='a'), dict(id='b'), dict(id='c')]
         else:
             sorted_subnet_retval = [dict(id='a', segment_id='1'),
                                     dict(id='c', segment_id='1')]
+            sorted_nonlocal_subnet_retval = [dict(id='b', segment_id='2')]
         self.assertEqual(retval['subnets'], sorted_subnet_retval)
+        self.assertEqual(retval['non_local_subnets'],
+                         sorted_nonlocal_subnet_retval)
         self.assertEqual(retval['ports'], port_retval)
 
     def test_get_network_info(self):
@@ -233,7 +250,7 @@ class TestDhcpRpcCallback(base.BaseTestCase):
             self.assertEqual(expected_port, port)
 
         self.plugin.get_port.return_value = {
-            'device_id': n_const.DEVICE_ID_RESERVED_DHCP_PORT}
+            'device_id': constants.DEVICE_ID_RESERVED_DHCP_PORT}
         self.callbacks._port_action = _fake_port_action
         self.callbacks.update_dhcp_port(mock.Mock(),
                                         host='foo_host',
@@ -285,7 +302,7 @@ class TestDhcpRpcCallback(base.BaseTestCase):
                          'id': 'foo_port_id'
                          }
         self.plugin.get_port.return_value = {
-            'device_id': n_const.DEVICE_ID_RESERVED_DHCP_PORT}
+            'device_id': constants.DEVICE_ID_RESERVED_DHCP_PORT}
         self.callbacks.update_dhcp_port(mock.Mock(),
                                         host='foo_host',
                                         port_id='foo_port_id',

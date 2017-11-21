@@ -16,7 +16,6 @@ from neutron_lib import constants as n_const
 from oslo_config import cfg
 
 from neutron._i18n import _
-from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
     import constants
 
@@ -111,7 +110,7 @@ agent_opts = [
     cfg.ListOpt('tunnel_types', default=DEFAULT_TUNNEL_TYPES,
                 help=_("Network types supported by the agent "
                        "(gre and/or vxlan).")),
-    cfg.PortOpt('vxlan_udp_port', default=p_const.VXLAN_UDP_PORT,
+    cfg.PortOpt('vxlan_udp_port', default=n_const.VXLAN_UDP_PORT,
                 help=_("The UDP port to use for VXLAN tunnels.")),
     cfg.IntOpt('veth_mtu', default=9000,
                help=_("MTU size of veth interfaces")),
@@ -124,21 +123,6 @@ agent_opts = [
                        "Allows the switch (when supporting an overlay) "
                        "to respond to an ARP request locally without "
                        "performing a costly ARP broadcast into the overlay.")),
-    cfg.BoolOpt('prevent_arp_spoofing', default=True,
-                deprecated_for_removal=True,
-                help=_("Enable suppression of ARP responses that don't match "
-                       "an IP address that belongs to the port from which "
-                       "they originate. Note: This prevents the VMs attached "
-                       "to this agent from spoofing, it doesn't protect them "
-                       "from other devices which have the capability to spoof "
-                       "(e.g. bare metal or VMs attached to agents without "
-                       "this flag set to True). Spoofing rules will not be "
-                       "added to any ports that have port security disabled. "
-                       "For LinuxBridge, this requires ebtables. For OVS, it "
-                       "requires a version that supports matching ARP "
-                       "headers. This option will be removed in Ocata so "
-                       "the only way to disable protection will be via the "
-                       "port security extension.")),
     cfg.BoolOpt('dont_fragment', default=True,
                 help=_("Set or un-set the don't fragment (DF) bit on "
                        "outgoing IP packet carrying GRE/VXLAN tunnel.")),

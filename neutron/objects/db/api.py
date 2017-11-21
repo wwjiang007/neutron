@@ -17,6 +17,7 @@ from neutron_lib import exceptions as n_exc
 from oslo_utils import uuidutils
 
 from neutron.db import _model_query as model_query
+from neutron.objects import utils as obj_utils
 
 
 # Common database operation implementations
@@ -36,7 +37,8 @@ def count(context, model, **kwargs):
 
 
 def _kwargs_to_filters(**kwargs):
-    return {k: v if isinstance(v, list) else [v]
+    retain_classes = (list, set, obj_utils.StringMatchingFilterObj)
+    return {k: v if isinstance(v, retain_classes) else [v]
             for k, v in kwargs.items()}
 
 
@@ -81,6 +83,23 @@ def delete_object(context, model, **kwargs):
     with context.session.begin(subtransactions=True):
         db_obj = _safe_get_object(context, model, **kwargs)
         context.session.delete(db_obj)
+
+
+def update_objects(context, model, values, **kwargs):
+    '''Update matching objects, if any. Return number of updated objects.
+
+    This function does not raise exceptions if nothing matches.
+
+    :param model: SQL model
+    :param values: values to update in matching objects
+    :param kwargs: multiple filters defined by key=value pairs
+    :return: Number of entries updated
+    '''
+    with context.session.begin(subtransactions=True):
+        if not values:
+            return count(context, model, **kwargs)
+        q = _get_filter_query(context, model, **kwargs)
+        return q.update(values, synchronize_session=False)
 
 
 def delete_objects(context, model, **kwargs):

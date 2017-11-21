@@ -14,8 +14,11 @@
 #    under the License.
 #
 
+import copy
+
 import mock
 import netaddr
+from neutron_lib.api.definitions import l3_ext_gw_mode as l3gwm_apidef
 from neutron_lib import constants
 from neutron_lib import context as nctx
 from neutron_lib.plugins import directory
@@ -31,9 +34,7 @@ from neutron.db import api as db_api
 from neutron.db import l3_db
 from neutron.db import l3_gwmode_db
 from neutron.db.models import l3 as l3_models
-from neutron.db import models_v2
 from neutron.extensions import l3
-from neutron.extensions import l3_ext_gw_mode
 from neutron.objects import network as net_obj
 from neutron.objects import ports as port_obj
 from neutron.objects import subnet as subnet_obj
@@ -59,7 +60,7 @@ class TestExtensionManager(object):
         # Simulate extension of L3 attribute map
         for key in l3.RESOURCE_ATTRIBUTE_MAP.keys():
             l3.RESOURCE_ATTRIBUTE_MAP[key].update(
-                l3_ext_gw_mode.EXTENDED_ATTRIBUTES_2_0.get(key, {}))
+                l3gwm_apidef.RESOURCE_ATTRIBUTE_MAP.get(key, {}))
         return l3.L3.get_resources()
 
     def get_actions(self):
@@ -200,7 +201,7 @@ class TestL3GwModeMixin(testlib_api.SqlTestCase):
             status=constants.PORT_STATUS_ACTIVE,
             mac_address=netaddr.EUI(FAKE_ROUTER_PORT_MAC),
             network_id=self.int_net_id)
-        self.router_port_ip_info = models_v2.IPAllocation(
+        self.router_port_ip_info = port_obj.IPAllocation(self.context,
             port_id=self.router_port.id,
             network_id=self.int_net.id,
             subnet_id=self.int_sub_id,
@@ -208,7 +209,7 @@ class TestL3GwModeMixin(testlib_api.SqlTestCase):
         self.int_net.create()
         self.int_sub.create()
         self.router_port.create()
-        self.context.session.add(self.router_port_ip_info)
+        self.router_port_ip_info.create()
         self.context.session.flush()
         self.fip_int_port = port_obj.Port(
             self.context,
@@ -220,7 +221,7 @@ class TestL3GwModeMixin(testlib_api.SqlTestCase):
             status=constants.PORT_STATUS_ACTIVE,
             mac_address=netaddr.EUI(FAKE_FIP_INT_PORT_MAC),
             network_id=self.int_net_id)
-        self.fip_int_ip_info = models_v2.IPAllocation(
+        self.fip_int_ip_info = port_obj.IPAllocation(self.context,
             port_id=self.fip_int_port.id,
             network_id=self.int_net.id,
             subnet_id=self.int_sub_id,
@@ -234,7 +235,7 @@ class TestL3GwModeMixin(testlib_api.SqlTestCase):
             fixed_ip_address=None,
             router_id=None)
         self.fip_int_port.create()
-        self.context.session.add(self.fip_int_ip_info)
+        self.fip_int_ip_info.create()
         self.context.session.add(self.fip)
         self.context.session.flush()
         self.context.session.expire_all()
@@ -366,10 +367,7 @@ class ExtGwModeIntTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
 
     def setUp(self, plugin=None, svc_plugins=None, ext_mgr=None):
         # Store l3 resource attribute map as it will be updated
-        self._l3_attribute_map_bk = {}
-        for item in l3.RESOURCE_ATTRIBUTE_MAP:
-            self._l3_attribute_map_bk[item] = (
-                l3.RESOURCE_ATTRIBUTE_MAP[item].copy())
+        self._l3_attribute_map_bk = copy.deepcopy(l3.RESOURCE_ATTRIBUTE_MAP)
         plugin = plugin or (
             'neutron.tests.unit.extensions.test_l3_ext_gw_mode.'
             'TestDbIntPlugin')

@@ -13,13 +13,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import mock
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib import constants
+from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
 
-from neutron.plugins.ml2 import driver_api as api
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import (
     constants as a_const)
 from neutron.plugins.ml2.drivers.openvswitch.mech_driver import (
@@ -29,7 +30,8 @@ from neutron.tests.unit.plugins.ml2 import _test_mech_agent as base
 
 class OpenvswitchMechanismBaseTestCase(base.AgentMechanismBaseTestCase):
     VIF_TYPE = portbindings.VIF_TYPE_OVS
-    VIF_DETAILS = {portbindings.CAP_PORT_FILTER: True,
+    VIF_DETAILS = {portbindings.OVS_DATAPATH_TYPE: 'system',
+                   portbindings.CAP_PORT_FILTER: True,
                    portbindings.OVS_HYBRID_PLUG: True}
     AGENT_TYPE = constants.AGENT_TYPE_OVS
 
@@ -79,7 +81,8 @@ class OpenvswitchMechanismBaseTestCase(base.AgentMechanismBaseTestCase):
 
 class OpenvswitchMechanismSGDisabledBaseTestCase(
     OpenvswitchMechanismBaseTestCase):
-    VIF_DETAILS = {portbindings.CAP_PORT_FILTER: False,
+    VIF_DETAILS = {portbindings.OVS_DATAPATH_TYPE: 'system',
+                   portbindings.CAP_PORT_FILTER: False,
                    portbindings.OVS_HYBRID_PLUG: False}
 
     def setUp(self):
@@ -166,7 +169,8 @@ class OpenvswitchMechanismSGDisabledLocalTestCase(
 class OpenvswitchMechanismFirewallUndefinedTestCase(
     OpenvswitchMechanismBaseTestCase, base.AgentMechanismLocalTestCase):
 
-    VIF_DETAILS = {portbindings.CAP_PORT_FILTER: True,
+    VIF_DETAILS = {portbindings.OVS_DATAPATH_TYPE: 'system',
+                   portbindings.CAP_PORT_FILTER: True,
                    portbindings.OVS_HYBRID_PLUG: True}
 
     def setUp(self):
@@ -236,3 +240,27 @@ class OpenvswitchMechanismDPDKTestCase(OpenvswitchMechanismBaseTestCase):
 
         result = self.driver.get_vif_type(None, self.AGENT_SYSTEM, None)
         self.assertEqual(portbindings.VIF_TYPE_OVS, result)
+
+
+class OpenvswitchMechanismSRIOVTestCase(OpenvswitchMechanismBaseTestCase):
+
+    def _make_port_ctx(self, agents, profile=None):
+        segments = [{api.ID: 'local_segment_id', api.NETWORK_TYPE: 'local'}]
+        return base.FakePortContext(self.AGENT_TYPE, agents, segments,
+                                    vnic_type=portbindings.VNIC_DIRECT,
+                                    profile=profile)
+
+    @mock.patch('neutron.plugins.ml2.drivers.mech_agent.'
+                'SimpleAgentMechanismDriverBase.bind_port')
+    def test_bind_port_sriov_legacy(self, mocked_bind_port):
+        context = self._make_port_ctx(self.AGENTS)
+        self.driver.bind_port(context)
+        mocked_bind_port.assert_not_called()
+
+    @mock.patch('neutron.plugins.ml2.drivers.mech_agent.'
+                'SimpleAgentMechanismDriverBase.bind_port')
+    def test_bind_port_sriov_switchdev(self, mocked_bind_port):
+        profile = {'capabilities': ['switchdev']}
+        context = self._make_port_ctx(self.AGENTS, profile=profile)
+        self.driver.bind_port(context)
+        mocked_bind_port.assert_called()

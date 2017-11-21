@@ -17,6 +17,7 @@ import collections
 
 from neutron_lib import exceptions
 from oslo_log import helpers as log_helpers
+from oslo_log import log as logging
 import oslo_messaging
 
 from neutron._i18n import _
@@ -29,6 +30,8 @@ from neutron.common import constants
 from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.objects import base as obj_base
+
+LOG = logging.getLogger(__name__)
 
 
 class ResourcesRpcError(exceptions.NeutronException):
@@ -221,7 +224,6 @@ class ResourcesPushRpcApi(object):
             resources_by_type[resource_type].append(resource)
         return resources_by_type
 
-    @log_helpers.log_method_call
     def push(self, context, resource_list, event_type):
         """Push an event and list of resources to agents, batched per type.
         When a list of different resource types is passed to this method,
@@ -230,35 +232,31 @@ class ResourcesPushRpcApi(object):
         """
 
         resources_by_type = self._classify_resources_by_type(resource_list)
+        LOG.debug(
+            "Pushing event %s for resources: %s", event_type,
+            {t: ["ID=%s,revision_number=%s" % (
+                     getattr(obj, 'id', None),
+                     getattr(obj, 'revision_number', None))
+                 for obj in resources_by_type[t]]
+             for t in resources_by_type})
         for resource_type, type_resources in resources_by_type.items():
             self._push(context, resource_type, type_resources, event_type)
 
     def _push(self, context, resource_type, resource_list, event_type):
         """Push an event and list of resources of the same type to agents."""
         _validate_resource_type(resource_type)
-        compat_call = len(resource_list) == 1
 
         for version in version_manager.get_resource_versions(resource_type):
             cctxt = self._prepare_object_fanout_context(
-                resource_list[0], version,
-                rpc_version='1.0' if compat_call else '1.1')
+                resource_list[0], version, rpc_version='1.1')
 
             dehydrated_resources = [
                 resource.obj_to_primitive(target_version=version)
                 for resource in resource_list]
 
-            if compat_call:
-                #TODO(mangelajo): remove in Ocata, backwards compatibility
-                #                 for agents expecting a single element as
-                #                 a single element instead of a list, this
-                #                 is only relevant to the QoSPolicy topic queue
-                cctxt.cast(context, 'push',
-                           resource=dehydrated_resources[0],
-                           event_type=event_type)
-            else:
-                cctxt.cast(context, 'push',
-                           resource_list=dehydrated_resources,
-                           event_type=event_type)
+            cctxt.cast(context, 'push',
+                       resource_list=dehydrated_resources,
+                       event_type=event_type)
 
 
 class ResourcesPushRpcCallback(object):
@@ -278,10 +276,7 @@ class ResourcesPushRpcCallback(object):
     @oslo_messaging.expected_exceptions(rpc_exc.CallbackNotFound)
     def push(self, context, **kwargs):
         """Push receiver, will always receive resources of the same type."""
-        # TODO(mangelajo): accept single 'resource' parameter for backwards
-        #                  compatibility during Newton, remove in Ocata
-        resource_list = ([kwargs['resource']] if 'resource' in kwargs else
-                         kwargs['resource_list'])
+        resource_list = kwargs['resource_list']
         event_type = kwargs['event_type']
 
         resource_objs = [

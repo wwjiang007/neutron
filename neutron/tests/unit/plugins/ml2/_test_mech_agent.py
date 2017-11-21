@@ -14,8 +14,8 @@
 #    under the License.
 
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.plugins.ml2 import api
 
-from neutron.plugins.ml2 import driver_api as api
 from neutron.tests import base
 
 NETWORK_ID = "fake_network"
@@ -42,11 +42,12 @@ class FakeNetworkContext(api.NetworkContext):
 class FakePortContext(api.PortContext):
     def __init__(self, agent_type, agents, segments,
                  vnic_type=portbindings.VNIC_NORMAL,
-                 original=None):
+                 original=None, profile=None):
         self._agent_type = agent_type
         self._agents = agents
         self._network_context = FakeNetworkContext(segments)
         self._bound_vnic_type = vnic_type
+        self._bound_profile = profile
         self._bound_segment_id = None
         self._bound_vif_type = None
         self._bound_vif_details = None
@@ -55,7 +56,8 @@ class FakePortContext(api.PortContext):
     @property
     def current(self):
         return {'id': PORT_ID,
-                portbindings.VNIC_TYPE: self._bound_vnic_type}
+                portbindings.VNIC_TYPE: self._bound_vnic_type,
+                portbindings.PROFILE: self._bound_profile}
 
     @property
     def original(self):
@@ -78,7 +80,8 @@ class FakePortContext(api.PortContext):
         if self._bound_segment:
             return [{
                 api.BOUND_DRIVER: 'fake_driver',
-                api.BOUND_SEGMENT: self._expand_segment(self._bound_segment)
+                api.BOUND_SEGMENT: self._expand_segment(
+                    self._bound_segment)
             }]
 
     @property

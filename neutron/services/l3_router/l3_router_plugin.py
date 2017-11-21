@@ -14,13 +14,13 @@
 #    under the License.
 
 from neutron_lib import constants as n_const
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.services import base as service_base
 from oslo_config import cfg
 from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
 from oslo_utils import importutils
 
-from neutron._i18n import _LI
 from neutron.api.rpc.agentnotifiers import l3_rpc_agent_api
 from neutron.api.rpc.handlers import l3_rpc
 from neutron.common import rpc as n_rpc
@@ -46,7 +46,7 @@ LOG = logging.getLogger(__name__)
 
 def disable_dvr_extension_by_config(aliases):
     if not cfg.CONF.enable_dvr:
-        LOG.info(_LI('Disabled DVR extension.'))
+        LOG.info('Disabled DVR extension.')
         if 'dvr' in aliases:
             aliases.remove('dvr')
 
@@ -116,7 +116,7 @@ class L3RouterPlugin(service_base.ServicePluginBase,
 
     @classmethod
     def get_plugin_type(cls):
-        return n_const.L3
+        return plugin_constants.L3
 
     def get_plugin_description(self):
         """returns string description of the plugin."""

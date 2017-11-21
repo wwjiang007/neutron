@@ -56,7 +56,7 @@ class TestSecurityGroup(base.BaseTestCase):
         self.sg = ovsfw.SecurityGroup('123')
         self.sg.members = {'type': [1, 2, 3, 4]}
 
-    def test_update_rules(self):
+    def test_update_rules_split(self):
         rules = [
             {'foo': 'bar', 'rule': 'all'}, {'bar': 'foo'},
             {'remote_group_id': '123456', 'foo': 'bar'}]
@@ -66,6 +66,29 @@ class TestSecurityGroup(base.BaseTestCase):
 
         self.assertEqual(expected_raw_rules, self.sg.raw_rules)
         self.assertEqual(expected_remote_rules, self.sg.remote_rules)
+
+    def test_update_rules_protocols(self):
+        rules = [
+            {'foo': 'bar', 'protocol': constants.PROTO_NAME_ICMP,
+             'ethertype': constants.IPv4},
+            {'foo': 'bar', 'protocol': constants.PROTO_NAME_ICMP,
+             'ethertype': constants.IPv6},
+            {'foo': 'bar', 'protocol': constants.PROTO_NAME_IPV6_ICMP_LEGACY,
+             'ethertype': constants.IPv6},
+            {'foo': 'bar', 'protocol': constants.PROTO_NAME_TCP},
+            {'foo': 'bar', 'protocol': '94'},
+            {'foo': 'bar', 'protocol': 'baz'},
+            {'foo': 'no_proto'}]
+        self.sg.update_rules(rules)
+
+        self.assertEqual({'foo': 'no_proto'}, self.sg.raw_rules.pop())
+        protos = [rule['protocol'] for rule in self.sg.raw_rules]
+        self.assertEqual([constants.PROTO_NUM_ICMP,
+                          constants.PROTO_NUM_IPV6_ICMP,
+                          constants.PROTO_NUM_IPV6_ICMP,
+                          constants.PROTO_NUM_TCP,
+                          94,
+                          'baz'], protos)
 
     def test_get_ethertype_filtered_addresses(self):
         addresses = self.sg.get_ethertype_filtered_addresses('type')
@@ -459,7 +482,8 @@ class TestOVSFirewallDriver(base.BaseTestCase):
 
     def test_prepare_port_filter(self):
         port_dict = {'device': 'port-id',
-                     'security_groups': [1]}
+                     'security_groups': [1],
+                     'fixed_ips': ["10.0.0.1"]}
         self._prepare_security_group()
         self.firewall.prepare_port_filter(port_dict)
         exp_egress_classifier = mock.call(
@@ -469,19 +493,19 @@ class TestOVSFirewallDriver(base.BaseTestCase):
                         ovs_consts.BASE_EGRESS_TABLE),
             in_port=self.port_ofport,
             priority=100,
-            table=ovs_consts.LOCAL_SWITCHING)
+            table=ovs_consts.TRANSIENT_TABLE)
         exp_ingress_classifier = mock.call(
             actions='set_field:{:d}->reg5,set_field:{:d}->reg6,'
-                    'resubmit(,{:d})'.format(
+                    'strip_vlan,resubmit(,{:d})'.format(
                         self.port_ofport, TESTING_VLAN_TAG,
                         ovs_consts.BASE_INGRESS_TABLE),
             dl_dst=self.port_mac,
+            dl_vlan='0x%x' % TESTING_VLAN_TAG,
             priority=90,
-            table=ovs_consts.LOCAL_SWITCHING)
+            table=ovs_consts.TRANSIENT_TABLE)
         filter_rule = mock.call(
             actions='ct(commit,zone=NXM_NX_REG6[0..15]),'
-            'strip_vlan,output:{:d}'.format(self.port_ofport),
-            dl_dst=self.port_mac,
+            'output:{:d}'.format(self.port_ofport),
             dl_type="0x{:04x}".format(n_const.ETHERTYPE_IP),
             nw_proto=constants.PROTO_NUM_TCP,
             priority=70,
@@ -498,8 +522,10 @@ class TestOVSFirewallDriver(base.BaseTestCase):
                      'security_groups': [1],
                      'port_security_enabled': False}
         self._prepare_security_group()
-        self.firewall.prepare_port_filter(port_dict)
-        self.assertFalse(self.mock_bridge.br.add_flow.called)
+        with mock.patch.object(
+                self.firewall, 'initialize_port_flows') as m_init_flows:
+            self.firewall.prepare_port_filter(port_dict)
+        self.assertFalse(m_init_flows.called)
 
     def test_prepare_port_filter_initialized_port(self):
         port_dict = {'device': 'port-id',
@@ -525,7 +551,6 @@ class TestOVSFirewallDriver(base.BaseTestCase):
         filter_rules = [mock.call(
             actions='resubmit(,{:d})'.format(
                 ovs_consts.ACCEPT_OR_INGRESS_TABLE),
-            dl_src=self.port_mac,
             dl_type="0x{:04x}".format(n_const.ETHERTYPE_IP),
             nw_proto=constants.PROTO_NUM_UDP,
             priority=70,
@@ -535,7 +560,6 @@ class TestOVSFirewallDriver(base.BaseTestCase):
                         mock.call(
             actions='conjunction({:d},2/2)'.format(conj_id),
             ct_state=ovsfw_consts.OF_STATE_ESTABLISHED_NOT_REPLY,
-            dl_src=mock.ANY,
             dl_type=mock.ANY,
             nw_proto=6,
             priority=70, reg5=self.port_ofport,
@@ -602,3 +626,72 @@ class TestOVSFirewallDriver(base.BaseTestCase):
             self.firewall._cleanup_stale_sg()
             sg_removed_mock.assert_called_once_with(1)
             delete_sg_mock.assert_called_once_with(1)
+
+    def test_get_ovs_port(self):
+        ovs_port = self.firewall.get_ovs_port('port_id')
+        self.assertEqual(self.fake_ovs_port, ovs_port)
+
+    def test_get_ovs_port_non_existent(self):
+        self.mock_bridge.br.get_vif_port_by_id.return_value = None
+        with testtools.ExpectedException(exceptions.OVSFWPortNotFound):
+            self.firewall.get_ovs_port('port_id')
+
+    def test__initialize_egress_no_port_security_sends_to_egress(self):
+        self.mock_bridge.br.db_get_val.return_value = {'tag': TESTING_VLAN_TAG}
+        self.firewall._initialize_egress_no_port_security('port_id')
+        expected_call = mock.call(
+            table=ovs_consts.TRANSIENT_TABLE,
+            priority=100,
+            in_port=self.fake_ovs_port.ofport,
+            actions='set_field:%d->reg%d,'
+                    'set_field:%d->reg%d,'
+                    'resubmit(,%d)' % (
+                        self.fake_ovs_port.ofport,
+                        ovsfw_consts.REG_PORT,
+                        TESTING_VLAN_TAG,
+                        ovsfw_consts.REG_NET,
+                        ovs_consts.ACCEPT_OR_INGRESS_TABLE)
+        )
+        calls = self.mock_bridge.br.add_flow.call_args_list
+        self.assertIn(expected_call, calls)
+
+    def test__initialize_egress_no_port_security_no_tag(self):
+        self.mock_bridge.br.db_get_val.return_value = {}
+        self.firewall._initialize_egress_no_port_security('port_id')
+        self.assertFalse(self.mock_bridge.br.add_flow.called)
+
+    def test__remove_egress_no_port_security_deletes_flow(self):
+        self.mock_bridge.br.db_get_val.return_value = {'tag': TESTING_VLAN_TAG}
+        self.firewall.sg_port_map.unfiltered['port_id'] = 1
+        self.firewall._remove_egress_no_port_security('port_id')
+        expected_call = mock.call(
+            table=ovs_consts.TRANSIENT_TABLE,
+            in_port=self.fake_ovs_port.ofport,
+        )
+        calls = self.mock_bridge.br.delete_flows.call_args_list
+        self.assertIn(expected_call, calls)
+
+    def test__remove_egress_no_port_security_no_tag(self):
+        self.mock_bridge.br.db_get_val.return_value = {}
+        self.firewall._remove_egress_no_port_security('port_id')
+        self.assertFalse(self.mock_bridge.br.delete_flows.called)
+
+    def test_process_trusted_ports_caches_port_id(self):
+        self.firewall.process_trusted_ports(['port_id'])
+        self.assertIn('port_id', self.firewall.sg_port_map.unfiltered)
+
+    def test_process_trusted_ports_port_not_found(self):
+        """Check that exception is not propagated outside."""
+        self.mock_bridge.br.get_vif_port_by_id.return_value = None
+        self.firewall.process_trusted_ports(['port_id'])
+        # Processing should have failed so port is not cached
+        self.assertNotIn('port_id', self.firewall.sg_port_map.unfiltered)
+
+    def test_remove_trusted_ports_clears_cached_port_id(self):
+        self.firewall.sg_port_map.unfiltered['port_id'] = 1
+        self.firewall.remove_trusted_ports(['port_id'])
+        self.assertNotIn('port_id', self.firewall.sg_port_map.unfiltered)
+
+    def test_remove_trusted_ports_not_managed_port(self):
+        """Check that exception is not propagated outside."""
+        self.firewall.remove_trusted_ports(['port_id'])

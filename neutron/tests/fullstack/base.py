@@ -16,6 +16,7 @@ import os
 
 from oslo_config import cfg
 
+from neutron.conf.agent import common as config
 from neutron.tests import base as tests_base
 from neutron.tests.common import helpers
 from neutron.tests.fullstack.resources import client as client_resource
@@ -57,6 +58,11 @@ class BaseFullStackTestCase(testlib_api.MySQLTestCaseMixin,
         # since the latter starts services that may rely on generated port
         # numbers
         tools.reset_random_seed()
+
+        # configure test runner to use rootwrap
+        self.setup_rootwrap()
+        config.setup_privsep()
+
         self.environment = environment
         self.environment.test_name = self.get_name()
         self.useFixture(self.environment)

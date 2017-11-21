@@ -13,7 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from debtcollector import removals
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
@@ -27,7 +26,7 @@ import six
 from sqlalchemy import or_
 from sqlalchemy.orm import exc
 
-from neutron._i18n import _, _LE
+from neutron._i18n import _
 from neutron.db import api as db_api
 from neutron.db.models import securitygroup as sg_models
 from neutron.db import models_v2
@@ -50,39 +49,11 @@ def add_port_binding(context, port_id):
     return record
 
 
-@removals.remove(
-    message="Use get_port from inside of a transaction. The revision plugin "
-            "provides protection against concurrent updates to the same "
-            "resource with compare and swap updates of the revision_number.",
-    removal_version='Queens')
-def get_locked_port_and_binding(context, port_id):
-    """Get port and port binding records for update within transaction."""
-
-    try:
-        # REVISIT(rkukura): We need the Port and PortBinding records
-        # to both be added to the session and locked for update. A
-        # single joined query should work, but the combination of left
-        # outer joins and postgresql doesn't seem to work.
-        port = (context.session.query(models_v2.Port).
-                enable_eagerloads(False).
-                filter_by(id=port_id).
-                with_lockmode('update').
-                one())
-        binding = (context.session.query(models.PortBinding).
-                   enable_eagerloads(False).
-                   filter_by(port_id=port_id).
-                   with_lockmode('update').
-                   one())
-        return port, binding
-    except exc.NoResultFound:
-        return None, None
-
-
 @db_api.context_manager.writer
 def set_binding_levels(context, levels):
     if levels:
         for level in levels:
-            context.session.add(level)
+            level.persist_state_to_session(context.session)
         LOG.debug("For port %(port_id)s, host %(host)s, "
                   "set binding levels %(levels)s",
                   {'port_id': levels[0].port_id,
@@ -110,9 +81,9 @@ def get_binding_levels(context, port_id, host):
 @db_api.context_manager.writer
 def clear_binding_levels(context, port_id, host):
     if host:
-        (context.session.query(models.PortBindingLevel).
-         filter_by(port_id=port_id, host=host).
-         delete())
+        for l in (context.session.query(models.PortBindingLevel).
+                  filter_by(port_id=port_id, host=host)):
+            context.session.delete(l)
         LOG.debug("For port %(port_id)s, host %(host)s, "
                   "cleared binding levels",
                   {'port_id': port_id,
@@ -166,7 +137,7 @@ def get_port(context, port_id):
         except exc.NoResultFound:
             return
         except exc.MultipleResultsFound:
-            LOG.error(_LE("Multiple ports have port_id starting with %s"),
+            LOG.error("Multiple ports have port_id starting with %s",
                       port_id)
             return
 
@@ -251,7 +222,7 @@ def get_port_binding_host(context, port_id):
                   {'port_id': port_id})
         return
     except exc.MultipleResultsFound:
-        LOG.error(_LE("Multiple ports have port_id starting with %s"),
+        LOG.error("Multiple ports have port_id starting with %s",
                   port_id)
         return
     return query.host
@@ -312,7 +283,7 @@ def partial_port_ids_to_full_ids(context, partial_ids):
         if len(matching) < 1:
             LOG.info("No ports have port_id starting with %s", partial_id)
         elif len(matching) > 1:
-            LOG.error(_LE("Multiple ports have port_id starting with %s"),
+            LOG.error("Multiple ports have port_id starting with %s",
                       partial_id)
     return result
 

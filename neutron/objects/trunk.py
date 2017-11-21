@@ -14,6 +14,7 @@
 #    under the License.
 
 from neutron_lib import exceptions as n_exc
+from neutron_lib.objects import exceptions as o_exc
 from oslo_db import exception as o_db_exc
 from oslo_utils import versionutils
 from oslo_versionedobjects import base as obj_base
@@ -22,7 +23,6 @@ from oslo_versionedobjects import fields as obj_fields
 from neutron.db import api as db_api
 from neutron.objects import base
 from neutron.objects import common_types
-from neutron.objects import exceptions as o_exc
 from neutron.services.trunk import exceptions as t_exc
 from neutron.services.trunk import models
 
@@ -44,7 +44,7 @@ class SubPort(base.NeutronDbObject):
         'segmentation_id': obj_fields.IntegerField(),
     }
 
-    fields_no_update = ['segmentation_type', 'segmentation_id']
+    fields_no_update = ['segmentation_type', 'segmentation_id', 'trunk_id']
 
     def to_dict(self):
         _dict = super(SubPort, self).to_dict()
@@ -125,6 +125,17 @@ class Trunk(base.NeutronDbObject):
     def update(self, **kwargs):
         self.update_fields(kwargs)
         super(Trunk, self).update()
+
+    # TODO(hichihara): For tag mechanism. This will be removed in bug/1704137
+    def to_dict(self):
+        _dict = super(Trunk, self).to_dict()
+        try:
+            _dict['tags'] = [t.tag for t in self.db_obj.standard_attr.tags]
+        except AttributeError:
+            # AttrtibuteError can be raised when accessing self.db_obj
+            # or self.db_obj.standard_attr
+            pass
+        return _dict
 
     def obj_make_compatible(self, primitive, target_version):
         _target_version = versionutils.convert_version_to_tuple(target_version)

@@ -14,15 +14,13 @@
 #    under the License.
 
 
+from neutron_lib import constants as p_const
 from neutron_lib import exceptions as n_exc
 from oslo_config import cfg
 from oslo_log import log
 
-from neutron._i18n import _LE
 from neutron.conf.plugins.ml2.drivers import driver_type
-from neutron.db.models.plugins.ml2 import geneveallocation \
-     as geneve_model
-from neutron.plugins.common import constants as p_const
+from neutron.objects.plugins.ml2 import geneveallocation as geneve_obj
 from neutron.plugins.ml2.drivers import type_tunnel
 
 LOG = log.getLogger(__name__)
@@ -33,8 +31,8 @@ driver_type.register_ml2_drivers_geneve_opts()
 class GeneveTypeDriver(type_tunnel.EndpointTunnelTypeDriver):
 
     def __init__(self):
-        super(GeneveTypeDriver, self).__init__(geneve_model.GeneveAllocation,
-                                               geneve_model.GeneveEndpoints)
+        super(GeneveTypeDriver, self).__init__(geneve_obj.GeneveAllocation,
+                                               geneve_obj.GeneveEndpoint)
         self.max_encap_size = cfg.CONF.ml2_type_geneve.max_header_size
 
     def get_type(self):
@@ -44,8 +42,7 @@ class GeneveTypeDriver(type_tunnel.EndpointTunnelTypeDriver):
         try:
             self._initialize(cfg.CONF.ml2_type_geneve.vni_ranges)
         except n_exc.NetworkTunnelRangeError:
-            LOG.error(_LE("Failed to parse vni_ranges. "
-                          "Service terminated!"))
+            LOG.error("Failed to parse vni_ranges. Service terminated!")
             raise SystemExit()
 
     def get_endpoints(self):

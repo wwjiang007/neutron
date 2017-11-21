@@ -19,7 +19,6 @@ from neutron_lib import constants as lib_constants
 from oslo_utils import uuidutils
 from six import moves
 
-from neutron.common import constants as n_const
 from neutron.common import ipv6_utils
 
 _uuid = uuidutils.generate_uuid
@@ -41,6 +40,7 @@ def get_ha_interface(ip='169.254.192.1', mac='12:34:56:78:2b:5d'):
             'id': _uuid(),
             'mac_address': mac,
             'name': u'L3 HA Admin port 0',
+            'mtu': 1500,
             'network_id': _uuid(),
             'status': u'ACTIVE',
             'subnets': [{'cidr': '169.254.192.0/18',
@@ -92,6 +92,7 @@ def prepare_router_data(ip_version=4, enable_snat=None, num_internal_ports=1,
     if enable_gw:
         ex_gw_port = {'id': _uuid(),
                       'mac_address': gateway_mac,
+                      'mtu': 1500,
                       'network_id': _uuid(),
                       'fixed_ips': fixed_ips,
                       'subnets': subnets,
@@ -182,6 +183,7 @@ def router_append_interface(router, count=1, ip_version=4, ra_mode=None,
 
         interfaces.append(
             {'id': _uuid(),
+             'mtu': 1500,
              'network_id': _uuid(),
              'admin_state_up': True,
              'fixed_ips': fixed_ips,
@@ -274,6 +276,7 @@ def router_append_pd_enabled_subnet(router, count=1):
     for i in range(current, current + count):
         subnet_id = _uuid()
         intf = {'id': _uuid(),
+                'mtu': 1500,
                 'network_id': _uuid(),
                 'admin_state_up': True,
                 'fixed_ips': [{'ip_address': '::1',
@@ -281,7 +284,7 @@ def router_append_pd_enabled_subnet(router, count=1):
                                'subnet_id': subnet_id}],
                 'mac_address': str(mac_address),
                 'subnets': [{'id': subnet_id,
-                             'cidr': n_const.PROVISIONAL_IPV6_PD_PREFIX,
+                             'cidr': lib_constants.PROVISIONAL_IPV6_PD_PREFIX,
                              'gateway_ip': '::1',
                              'ipv6_ra_mode': lib_constants.IPV6_SLAAC,
                              'subnetpool_id': lib_constants.IPV6_PD_POOL_ID}]}
@@ -295,7 +298,7 @@ def get_unassigned_pd_interfaces(router):
     for intf in router[lib_constants.INTERFACE_KEY]:
         for subnet in intf['subnets']:
             if (ipv6_utils.is_ipv6_pd_enabled(subnet) and
-                subnet['cidr'] == n_const.PROVISIONAL_IPV6_PD_PREFIX):
+                subnet['cidr'] == lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
                 pd_intfs.append(intf)
     return pd_intfs
 
@@ -305,7 +308,7 @@ def assign_prefix_for_pd_interfaces(router):
     for ifno, intf in enumerate(router[lib_constants.INTERFACE_KEY]):
         for subnet in intf['subnets']:
             if (ipv6_utils.is_ipv6_pd_enabled(subnet) and
-                subnet['cidr'] == n_const.PROVISIONAL_IPV6_PD_PREFIX):
+                subnet['cidr'] == lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
                 subnet['cidr'] = "2001:db8:%d::/64" % ifno
                 pd_intfs.append(intf)
     return pd_intfs
@@ -331,6 +334,7 @@ def prepare_ext_gw_test(context, ri, dual_stack=False):
                   'subnets': subnets,
                   'extra_subnets': [{'cidr': '172.16.0.0/24'}],
                   'id': _uuid(),
+                  'mtu': 1500,
                   'network_id': _uuid(),
                   'mac_address': 'ca:fe:de:ad:be:ef'}
     interface_name = ri.get_external_device_name(ex_gw_port['id'])

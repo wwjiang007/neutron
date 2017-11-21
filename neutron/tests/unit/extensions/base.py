@@ -17,16 +17,15 @@
 #    under the License.
 
 import mock
+from neutron_lib import fixture
 from oslo_config import cfg
 from oslo_utils import uuidutils
 from webob import exc
 import webtest
 
 from neutron.api import extensions
-from neutron.api.v2 import attributes
 from neutron import manager
 from neutron import quota
-from neutron.tests import tools
 from neutron.tests.unit.api import test_extensions
 from neutron.tests.unit.api.v2 import test_base
 from neutron.tests.unit import testlib_api
@@ -37,8 +36,10 @@ CORE_PLUGIN = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
 
 class ExtensionTestCase(testlib_api.WebTestCase):
 
+    # TODO(boden): phase out resource_attribute_map
     def _setUpExtension(self, plugin, service_type,
-                        resource_attribute_map, extension_class,
+                        resource_attribute_map,
+                        extension_class,
                         resource_prefix, plural_mappings=None,
                         translate_resource_name=False,
                         allow_pagination=False, allow_sorting=False,
@@ -53,7 +54,7 @@ class ExtensionTestCase(testlib_api.WebTestCase):
         # Ensure existing ExtensionManager is not used
         extensions.PluginAwareExtensionManager._instance = None
 
-        self.useFixture(tools.AttributeMapMemento())
+        self.useFixture(fixture.APIDefinitionFixture())
 
         # Create the default configurations
         self.config_parse()
@@ -90,12 +91,6 @@ class ExtensionTestCase(testlib_api.WebTestCase):
 
         class ExtensionTestExtensionManager(object):
             def get_resources(self):
-                # Add the resources to the global attribute map
-                # This is done here as the setup process won't
-                # initialize the main API router which extends
-                # the global attribute map
-                attributes.RESOURCE_ATTRIBUTE_MAP.update(
-                    resource_attribute_map)
                 return extension_class.get_resources()
 
             def get_actions(self):

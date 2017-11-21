@@ -19,6 +19,7 @@ import mock
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -209,20 +210,16 @@ class NeutronPolicyTestCase(base.BaseTestCase):
         attributes.RESOURCE_ATTRIBUTE_MAP.update(FAKE_RESOURCES)
         self._set_rules()
 
-        def remove_fake_resource():
-            del attributes.RESOURCE_ATTRIBUTE_MAP["%ss" % FAKE_RESOURCE_NAME]
-
         self.patcher = mock.patch.object(neutron.policy,
                                          'init',
                                          new=self.fakepolicyinit)
         self.patcher.start()
         policy.refresh()
-        self.addCleanup(remove_fake_resource)
         self.addCleanup(policy.refresh)
         self.context = context.Context('fake', 'fake', roles=['user'])
         plugin_klass = importutils.import_class(
             "neutron.db.db_base_plugin_v2.NeutronDbPluginV2")
-        directory.add_plugin(constants.CORE, plugin_klass())
+        directory.add_plugin(plugin_constants.CORE, plugin_klass())
 
     def _set_rules(self, **kwargs):
         rules_dict = {
@@ -258,36 +255,9 @@ class NeutronPolicyTestCase(base.BaseTestCase):
             "create_fake_resource:attr:sub_attr_2": "rule:admin_only",
 
             "create_fake_policy:": "rule:admin_or_owner",
-            "get_firewall_policy": "rule:admin_or_owner or "
-                            "rule:shared",
-            "get_firewall_rule": "rule:admin_or_owner or "
-                            "rule:shared",
-
-            "insert_rule": "rule:admin_or_owner",
-            "remove_rule": "rule:admin_or_owner",
         }
         rules_dict.update(**kwargs)
         self.rules = oslo_policy.Rules.from_dict(rules_dict)
-
-    def test_firewall_policy_insert_rule_with_admin_context(self):
-        action = "insert_rule"
-        target = {}
-        result = policy.check(context.get_admin_context(), action, target)
-        self.assertTrue(result)
-
-    def test_firewall_policy_insert_rule_with_owner(self):
-        action = "insert_rule"
-        target = {"tenant_id": "own_tenant"}
-        user_context = context.Context('', "own_tenant", roles=['user'])
-        result = policy.check(user_context, action, target)
-        self.assertTrue(result)
-
-    def test_firewall_policy_remove_rule_without_admin_or_owner(self):
-        action = "remove_rule"
-        target = {"firewall_rule_id": "rule_id", "tenant_id": "tenantA"}
-        user_context = context.Context('', "another_tenant", roles=['user'])
-        result = policy.check(user_context, action, target)
-        self.assertFalse(result)
 
     def _test_action_on_attr(self, context, action, obj, attr, value,
                              exception=None, **kwargs):
@@ -460,18 +430,6 @@ class NeutronPolicyTestCase(base.BaseTestCase):
 
     def test_enforce_regularuser_on_read(self):
         action = "get_network"
-        target = {'shared': True, 'tenant_id': 'somebody_else'}
-        result = policy.enforce(self.context, action, target)
-        self.assertTrue(result)
-
-    def test_enforce_firewall_policy_shared(self):
-        action = "get_firewall_policy"
-        target = {'shared': True, 'tenant_id': 'somebody_else'}
-        result = policy.enforce(self.context, action, target)
-        self.assertTrue(result)
-
-    def test_enforce_firewall_rule_shared(self):
-        action = "get_firewall_rule"
         target = {'shared': True, 'tenant_id': 'somebody_else'}
         result = policy.enforce(self.context, action, target)
         self.assertTrue(result)

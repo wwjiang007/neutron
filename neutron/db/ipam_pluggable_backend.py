@@ -24,14 +24,14 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from sqlalchemy import and_
 
-from neutron._i18n import _LE, _LW
-from neutron.common import constants as n_const
 from neutron.common import ipv6_utils
 from neutron.db import api as db_api
 from neutron.db import ipam_backend_mixin
 from neutron.db import models_v2
 from neutron.ipam import driver
 from neutron.ipam import exceptions as ipam_exc
+from neutron.objects import ports as port_obj
+from neutron.objects import subnet as obj_subnet
 
 
 LOG = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         try:
             func(*args, **kwargs)
         except Exception as e:
-            LOG.warning(_LW("Revert failed with: %s"), e)
+            LOG.warning("Revert failed with: %s", e)
 
     def _ipam_deallocate_ips(self, context, ipam_driver, port, ips,
                              revert_on_fail=True):
@@ -90,8 +90,8 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 elif not revert_on_fail and ips:
                     addresses = ', '.join(self._get_failed_ips(ips,
                                                                deallocated))
-                    LOG.error(_LE("IP deallocation failed on "
-                                  "external system for %s"), addresses)
+                    LOG.error("IP deallocation failed on "
+                              "external system for %s", addresses)
         return deallocated
 
     def _ipam_allocate_ips(self, context, ipam_driver, port, ips,
@@ -144,8 +144,8 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 elif not revert_on_fail and ips:
                     addresses = ', '.join(self._get_failed_ips(ips,
                                                                allocated))
-                    LOG.error(_LE("IP allocation failed on "
-                                  "external system for %s"), addresses)
+                    LOG.error("IP allocation failed on "
+                              "external system for %s", addresses)
 
         return allocated
 
@@ -199,15 +199,16 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         a subnet_id then allocate an IP address accordingly.
         """
         p = port['port']
+        fixed_configured = p['fixed_ips'] is not constants.ATTR_NOT_SPECIFIED
         subnets = self._ipam_get_subnets(context,
                                          network_id=p['network_id'],
                                          host=p.get(portbindings.HOST_ID),
-                                         service_type=p.get('device_owner'))
+                                         service_type=p.get('device_owner'),
+                                         fixed_configured=fixed_configured)
 
         v4, v6_stateful, v6_stateless = self._classify_subnets(
             context, subnets)
 
-        fixed_configured = p['fixed_ips'] is not constants.ATTR_NOT_SPECIFIED
         if fixed_configured:
             ips = self._test_fixed_ips_for_port(context,
                                                 p["network_id"],
@@ -261,7 +262,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
 
             is_auto_addr_subnet = ipv6_utils.is_auto_address_subnet(subnet)
             if ('ip_address' in fixed and
-                    subnet['cidr'] != n_const.PROVISIONAL_IPV6_PD_PREFIX):
+                    subnet['cidr'] != constants.PROVISIONAL_IPV6_PD_PREFIX):
                 if (is_auto_addr_subnet and device_owner not in
                         constants.ROUTER_INTERFACE_OWNERS):
                     raise ipam_exc.AllocationOnAutoAddressSubnet(
@@ -277,7 +278,6 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                         not is_auto_addr_subnet):
                     fixed_ip_list.append({'subnet_id': subnet['id']})
 
-        self._validate_max_ips_per_port(fixed_ip_list, device_owner)
         return fixed_ip_list
 
     def _update_ips_for_port(self, context, port, host,
@@ -327,10 +327,9 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         for pool in allocation_pools:
             first_ip = str(netaddr.IPAddress(pool.first, pool.version))
             last_ip = str(netaddr.IPAddress(pool.last, pool.version))
-            ip_pool = models_v2.IPAllocationPool(subnet=subnet,
-                                                 first_ip=first_ip,
-                                                 last_ip=last_ip)
-            context.session.add(ip_pool)
+            obj_subnet.IPAllocationPool(
+                context, subnet_id=subnet['id'], start=first_ip,
+                end=last_ip).create()
 
     def update_port_with_ips(self, context, host, db_port, new_port, new_mac):
         changes = self.Changes(add=[], original=[], remove=[])
@@ -380,7 +379,6 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                     ip['subnet_id'], db_port.id)
             self._update_db_port(context, db_port, new_port, network_id,
                                  new_mac)
-            getattr(db_port, 'fixed_ips')  # refresh relationship before return
 
             if auto_assign_subnets:
                 port_copy = copy.deepcopy(original)
@@ -388,6 +386,8 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 port_copy['fixed_ips'] = auto_assign_subnets
                 self.allocate_ips_for_port_and_store(context,
                             {'port': port_copy}, port_copy['id'])
+
+            getattr(db_port, 'fixed_ips')  # refresh relationship before return
 
         except Exception:
             with excutils.save_and_reraise_exception():
@@ -448,11 +448,6 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
 
     def add_auto_addrs_on_network_ports(self, context, subnet, ipam_subnet):
         """For an auto-address subnet, add addrs for ports on the net."""
-        # TODO(kevinbenton): remove after bug/1666493 is resolved
-        if subnet['id'] != ipam_subnet.subnet_manager.neutron_id:
-            raise RuntimeError(
-                "Subnet manager doesn't match subnet. %s != %s"
-                % (subnet['id'], ipam_subnet.subnet_manager.neutron_id))
         # TODO(ataraday): switched for writer when flush_on_subtransaction
         # will be available for neutron
         with context.session.begin(subtransactions=True):
@@ -471,22 +466,17 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                       'eui64_address': True,
                       'mac': port['mac_address']}
                 ip_request = factory.get_request(context, port, ip)
-                # TODO(kevinbenton): remove after bug/1666493 is resolved
-                LOG.debug("Requesting with IP request: %s port: %s ip: %s "
-                          "for subnet %s and ipam_subnet %s", ip_request,
-                          port, ip, subnet, ipam_subnet)
-                ip_address = ipam_subnet.allocate(ip_request)
-                allocated = models_v2.IPAllocation(network_id=network_id,
-                                                   port_id=port['id'],
-                                                   ip_address=ip_address,
-                                                   subnet_id=subnet['id'])
                 try:
+                    ip_address = ipam_subnet.allocate(ip_request)
+                    allocated = port_obj.IPAllocation(
+                        context, network_id=network_id, port_id=port['id'],
+                        ip_address=ip_address, subnet_id=subnet['id'])
                     # Do the insertion of each IP allocation entry within
                     # the context of a nested transaction, so that the entry
                     # is rolled back independently of other entries whenever
                     # the corresponding port has been deleted.
                     with db_api.context_manager.writer.using(context):
-                        context.session.add(allocated)
+                        allocated.create()
                     updated_ports.append(port['id'])
                 except db_exc.DBReferenceError:
                     LOG.debug("Port %s was deleted while updating it with an "
@@ -498,6 +488,10 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                     except Exception:
                         LOG.debug("Reverting IP allocation failed for %s",
                                   ip_address)
+                except ipam_exc.IpAddressAlreadyAllocated:
+                    LOG.debug("Port %s got IPv6 auto-address in a concurrent "
+                              "create or update port request. Ignoring.",
+                              port['id'])
             return updated_ports
 
     def allocate_subnet(self, context, network, subnet, subnetpool_id):

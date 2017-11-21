@@ -16,10 +16,10 @@
 import re
 
 from neutron_lib import exceptions
+from neutron_lib.services.qos import constants as qos_consts
 
 from neutron._i18n import _
 from neutron.agent.linux import ip_lib
-from neutron.services.qos import qos_consts
 
 
 INGRESS_QDISC_ID = "ffff:"
@@ -200,7 +200,9 @@ class TcCommand(ip_lib.IPDevice):
         # Return_code=2 is fine because it means
         # "RTNETLINK answers: No such file or directory" what is fine when we
         # are trying to delete qdisc
-        return self._execute_tc_cmd(cmd, extra_ok_codes=[2])
+        # Return_code=1 means "RTNETLINK answers: Cannot find device <device>".
+        # If the device doesn't exist, the qdisc is already deleted.
+        return self._execute_tc_cmd(cmd, extra_ok_codes=[1, 2])
 
     def _get_tbf_burst_value(self, bw_limit, burst_limit):
         min_burst_value = float(bw_limit) / float(self.kernel_hz)

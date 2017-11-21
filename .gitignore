@@ -6,6 +6,7 @@ cover/
 covhtml/
 dist/
 doc/build
+doc/source/_static/config-samples/*.sample
 etc/*.sample
 etc/neutron/plugins/ml2/*.sample
 *.DS_Store
@@ -25,7 +26,9 @@ setuptools*.egg/
 !/.gitreview
 !/.mailmap
 !/.pylintrc
+!/.stestr.conf
 !/.testr.conf
+!/.zuul.yaml
 
 # Files created by releasenotes build
 releasenotes/build

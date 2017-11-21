@@ -14,17 +14,17 @@
 
 import contextlib
 
+from neutron_lib.api.definitions import metering as metering_apidef
 from neutron_lib import constants as n_consts
 from neutron_lib import context
 from neutron_lib.db import constants as db_const
+from neutron_lib.plugins import constants
 from oslo_utils import uuidutils
 import webob.exc
 
 from neutron.api import extensions
 from neutron.common import config
 import neutron.extensions
-from neutron.extensions import metering
-from neutron.plugins.common import constants
 from neutron.services.metering import metering_plugin
 from neutron.tests.unit.db import test_db_base_plugin_v2
 
@@ -120,7 +120,7 @@ class MeteringPluginDbTestCase(
 
     resource_prefix_map = dict(
         (k.replace('_', '-'), "/metering")
-        for k in metering.RESOURCE_ATTRIBUTE_MAP.keys()
+        for k in metering_apidef.RESOURCE_ATTRIBUTE_MAP.keys()
     )
 
     def setUp(self, plugin=None):

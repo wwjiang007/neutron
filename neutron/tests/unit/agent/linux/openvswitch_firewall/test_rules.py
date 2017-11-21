@@ -183,21 +183,19 @@ class TestCreateProtocolFlows(base.BaseTestCase):
         self.assertEqual(expected_flows, flows)
 
     def test_create_protocol_flows_ingress(self):
-        rule = {'protocol': constants.PROTO_NAME_TCP}
+        rule = {'protocol': constants.PROTO_NUM_TCP}
         expected_flows = [{
             'table': ovs_consts.RULES_INGRESS_TABLE,
-            'dl_dst': self.port.mac,
-            'actions': 'strip_vlan,output:1',
+            'actions': 'output:1',
             'nw_proto': constants.PROTO_NUM_TCP,
         }]
         self._test_create_protocol_flows_helper(
             firewall.INGRESS_DIRECTION, rule, expected_flows)
 
     def test_create_protocol_flows_egress(self):
-        rule = {'protocol': constants.PROTO_NAME_TCP}
+        rule = {'protocol': constants.PROTO_NUM_TCP}
         expected_flows = [{
             'table': ovs_consts.RULES_EGRESS_TABLE,
-            'dl_src': self.port.mac,
             'actions': 'resubmit(,{:d})'.format(
                 ovs_consts.ACCEPT_OR_INGRESS_TABLE),
             'nw_proto': constants.PROTO_NUM_TCP,
@@ -209,7 +207,6 @@ class TestCreateProtocolFlows(base.BaseTestCase):
         rule = {}
         expected_flows = [{
             'table': ovs_consts.RULES_EGRESS_TABLE,
-            'dl_src': self.port.mac,
             'actions': 'resubmit(,{:d})'.format(
                 ovs_consts.ACCEPT_OR_INGRESS_TABLE),
         }]
@@ -218,10 +215,9 @@ class TestCreateProtocolFlows(base.BaseTestCase):
 
     def test_create_protocol_flows_icmp6(self):
         rule = {'ethertype': constants.IPv6,
-                'protocol': constants.PROTO_NAME_ICMP}
+                'protocol': constants.PROTO_NUM_IPV6_ICMP}
         expected_flows = [{
             'table': ovs_consts.RULES_EGRESS_TABLE,
-            'dl_src': self.port.mac,
             'actions': 'resubmit(,{:d})'.format(
                 ovs_consts.ACCEPT_OR_INGRESS_TABLE),
             'nw_proto': constants.PROTO_NUM_IPV6_ICMP,
@@ -231,16 +227,45 @@ class TestCreateProtocolFlows(base.BaseTestCase):
 
     def test_create_protocol_flows_port_range(self):
         rule = {'ethertype': constants.IPv4,
-                'protocol': constants.PROTO_NAME_TCP,
+                'protocol': constants.PROTO_NUM_TCP,
                 'port_range_min': 22,
                 'port_range_max': 23}
         expected_flows = [{
             'table': ovs_consts.RULES_EGRESS_TABLE,
-            'dl_src': self.port.mac,
             'actions': 'resubmit(,{:d})'.format(
                 ovs_consts.ACCEPT_OR_INGRESS_TABLE),
             'nw_proto': constants.PROTO_NUM_TCP,
             'tcp_dst': '0x0016/0xfffe'
+        }]
+        self._test_create_protocol_flows_helper(
+            firewall.EGRESS_DIRECTION, rule, expected_flows)
+
+    def test_create_protocol_flows_icmp(self):
+        rule = {'ethertype': constants.IPv4,
+                'protocol': constants.PROTO_NUM_ICMP,
+                'port_range_min': 0}
+        expected_flows = [{
+            'table': ovs_consts.RULES_EGRESS_TABLE,
+            'actions': 'resubmit(,{:d})'.format(
+                ovs_consts.ACCEPT_OR_INGRESS_TABLE),
+            'nw_proto': constants.PROTO_NUM_ICMP,
+            'icmp_type': 0
+        }]
+        self._test_create_protocol_flows_helper(
+            firewall.EGRESS_DIRECTION, rule, expected_flows)
+
+    def test_create_protocol_flows_ipv6_icmp(self):
+        rule = {'ethertype': constants.IPv6,
+                'protocol': constants.PROTO_NUM_IPV6_ICMP,
+                'port_range_min': 5,
+                'port_range_max': 0}
+        expected_flows = [{
+            'table': ovs_consts.RULES_EGRESS_TABLE,
+            'actions': 'resubmit(,{:d})'.format(
+                ovs_consts.ACCEPT_OR_INGRESS_TABLE),
+            'nw_proto': constants.PROTO_NUM_IPV6_ICMP,
+            'icmp_type': 5,
+            'icmp_code': 0,
         }]
         self._test_create_protocol_flows_helper(
             firewall.EGRESS_DIRECTION, rule, expected_flows)
@@ -256,7 +281,7 @@ class TestCreatePortRangeFlows(base.BaseTestCase):
 
     def test_create_port_range_flows_with_source_and_destination(self):
         rule = {
-            'protocol': constants.PROTO_NAME_TCP,
+            'protocol': constants.PROTO_NUM_TCP,
             'source_port_range_min': 123,
             'source_port_range_max': 124,
             'port_range_min': 10,
@@ -270,7 +295,7 @@ class TestCreatePortRangeFlows(base.BaseTestCase):
 
     def test_create_port_range_flows_with_source(self):
         rule = {
-            'protocol': constants.PROTO_NAME_TCP,
+            'protocol': constants.PROTO_NUM_TCP,
             'source_port_range_min': 123,
             'source_port_range_max': 124,
         }
@@ -282,7 +307,7 @@ class TestCreatePortRangeFlows(base.BaseTestCase):
 
     def test_create_port_range_flows_with_destination(self):
         rule = {
-            'protocol': constants.PROTO_NAME_TCP,
+            'protocol': constants.PROTO_NUM_TCP,
             'port_range_min': 10,
             'port_range_max': 11,
         }
@@ -293,14 +318,15 @@ class TestCreatePortRangeFlows(base.BaseTestCase):
 
     def test_create_port_range_flows_without_port_range(self):
         rule = {
-            'protocol': constants.PROTO_NAME_TCP,
+            'protocol': constants.PROTO_NUM_TCP,
         }
         expected_flows = []
         self._test_create_port_range_flows_helper(expected_flows, rule)
 
     def test_create_port_range_with_icmp_protocol(self):
+        # NOTE: such call is prevented by create_protocols_flows
         rule = {
-            'protocol': 'icmp',
+            'protocol': constants.PROTO_NUM_ICMP,
             'port_range_min': 10,
             'port_range_max': 11,
         }
@@ -353,7 +379,6 @@ class TestCreateConjFlows(base.BaseTestCase):
         conj_id = 1234
         expected_template = {
             'table': ovs_consts.RULES_INGRESS_TABLE,
-            'dl_dst': port.mac,
             'dl_type': n_const.ETHERTYPE_IPV6,
             'priority': 70,
             'conj_id': conj_id,
@@ -368,7 +393,7 @@ class TestCreateConjFlows(base.BaseTestCase):
                          flows[0]['ct_state'])
         self.assertEqual(ovsfw_consts.OF_STATE_NEW_NOT_ESTABLISHED,
                          flows[1]['ct_state'])
-        self.assertEqual("strip_vlan,output:{:d}".format(port.ofport),
+        self.assertEqual("output:{:d}".format(port.ofport),
                          flows[0]['actions'])
         self.assertEqual("ct(commit,zone=NXM_NX_REG{:d}[0..15]),{:s}".format(
             ovsfw_consts.REG_NET, flows[0]['actions']),
@@ -379,3 +404,96 @@ class TestCreateConjFlows(base.BaseTestCase):
             del f['ct_state']
             self.assertEqual(expected_template, f)
             expected_template['conj_id'] += 1
+
+
+class TestMergeRules(base.BaseTestCase):
+    def setUp(self):
+        super(TestMergeRules, self).setUp()
+        self.rule_tmpl = [('direction', 'ingress'), ('ethertype', 'IPv4'),
+                          ('protocol', 6)]
+
+    def _test_merge_port_ranges_helper(self, expected, result):
+        """Take a list of (port_range_min, port_range_max, conj_ids)
+        and an output from rules.merge_port_ranges and check if they
+        are identical, ignoring the other rule fields.
+        """
+        self.assertEqual(len(expected), len(result))
+        for (range_min, range_max, conj_ids), result1 in zip(
+                expected, result):
+            self.assertEqual(range_min, result1[0]['port_range_min'])
+            self.assertEqual(range_max, result1[0]['port_range_max'])
+            self.assertEqual(conj_ids, set(result1[1]))
+
+    def test__assert_mergeable_rules(self):
+        self.assertRaises(RuntimeError,
+                          rules._assert_mergeable_rules,
+                          [({'direction': 'ingress', 'ethertype': 'IPv4',
+                             'protocol': 1}, 8),
+                           ({'direction': 'ingress', 'ethertype': 'IPv6'},
+                            16)])
+
+    def test_merge_common_rules_single(self):
+        rule_conj_tuple = ({'direction': 'egress', 'ethertype': 'IPv4',
+                            'protocol': 1}, 8)
+        result = rules.merge_common_rules([rule_conj_tuple])
+        self.assertEqual([(rule_conj_tuple[0], [rule_conj_tuple[1]])],
+                         result)
+
+    def test_merge_common_rules(self):
+        rule_conj_list = [({'direction': 'ingress', 'ethertype': 'IPv4',
+                            'protocol': 1}, 8),
+                          ({'direction': 'ingress', 'ethertype': 'IPv4',
+                            'protocol': 1, 'port_range_min': 3}, 16),
+                          ({'direction': 'ingress', 'ethertype': 'IPv4',
+                            'protocol': 1, 'port_range_min': 3,
+                            'port_range_max': 0}, 40),
+                          ({'direction': 'ingress', 'ethertype': 'IPv4',
+                            'protocol': 1}, 24)]
+        result = rules.merge_common_rules(rule_conj_list)
+        self.assertItemsEqual(
+            [({'direction': 'ingress', 'ethertype': 'IPv4',
+               'protocol': 1}, [8, 24]),
+             ({'direction': 'ingress', 'ethertype': 'IPv4',
+               'protocol': 1, 'port_range_min': 3}, [16]),
+             ({'direction': 'ingress', 'ethertype': 'IPv4',
+               'protocol': 1, 'port_range_min': 3, 'port_range_max': 0},
+              [40])],
+            result)
+
+    def test_merge_port_ranges_overlapping(self):
+        result = rules.merge_port_ranges(
+            [(dict([('port_range_min', 20), ('port_range_max', 30)] +
+                   self.rule_tmpl), 6),
+             (dict([('port_range_min', 30), ('port_range_max', 40)] +
+                   self.rule_tmpl), 14),
+             (dict([('port_range_min', 35), ('port_range_max', 40)] +
+                   self.rule_tmpl), 22),
+             (dict([('port_range_min', 20), ('port_range_max', 20)] +
+                   self.rule_tmpl), 30)])
+        self._test_merge_port_ranges_helper([
+            # port_range_min, port_range_max, conj_ids
+            (20, 20, {6, 30}),
+            (21, 29, {6}),
+            (30, 30, {6, 14}),
+            (31, 34, {14}),
+            (35, 40, {14, 22})], result)
+
+    def test_merge_port_ranges_no_port_ranges(self):
+        result = rules.merge_port_ranges(
+            [(dict(self.rule_tmpl), 10),
+             (dict(self.rule_tmpl), 12),
+             (dict([('port_range_min', 30), ('port_range_max', 40)] +
+                   self.rule_tmpl), 4)])
+        self._test_merge_port_ranges_helper([
+                (1, 29, {10, 12}),
+                (30, 40, {10, 12, 4}),
+                (41, 65535, {10, 12})], result)
+
+    def test_merge_port_ranges_nonoverlapping(self):
+        result = rules.merge_port_ranges(
+            [(dict([('port_range_min', 30), ('port_range_max', 40)] +
+                   self.rule_tmpl), 32),
+             (dict([('port_range_min', 100), ('port_range_max', 140)] +
+                   self.rule_tmpl), 40)])
+        self._test_merge_port_ranges_helper(
+            [(30, 40, {32}), (100, 140, {40})], result)

@@ -19,9 +19,9 @@ import signal
 import netaddr
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as n_consts
+from neutron_lib.utils import runtime
 from oslo_log import log as logging
 
-from neutron._i18n import _, _LE
 from neutron.agent.l3 import namespaces
 from neutron.agent.l3 import router_info as router
 from neutron.agent.linux import external_process
@@ -93,7 +93,7 @@ class HaRouter(router.RouterInfo):
             with open(ha_state_path, 'w') as f:
                 f.write(new_state)
         except (OSError, IOError):
-            LOG.error(_LE('Error while writing HA state for %s'),
+            LOG.error('Error while writing HA state for %s',
                       self.router_id)
 
     @property
@@ -112,8 +112,8 @@ class HaRouter(router.RouterInfo):
     def initialize(self, process_monitor):
         ha_port = self.router.get(n_consts.HA_INTERFACE_KEY)
         if not ha_port:
-            msg = _("Unable to process HA router %s without "
-                    "HA port") % self.router_id
+            msg = ("Unable to process HA router %s without HA port" %
+                   self.router_id)
             LOG.exception(msg)
             raise Exception(msg)
         super(HaRouter, self).initialize(process_monitor)
@@ -164,6 +164,10 @@ class HaRouter(router.RouterInfo):
         self.keepalived_manager.spawn()
 
     def disable_keepalived(self):
+        if not self.keepalived_manager:
+            LOG.debug('Error while disabling keepalived for %s - no manager',
+                      self.router_id)
+            return
         self.keepalived_manager.disable()
         conf_dir = self.keepalived_manager.get_conf_dir()
         shutil.rmtree(conf_dir)
@@ -193,6 +197,10 @@ class HaRouter(router.RouterInfo):
                             preserve_ips=[self._get_primary_vip()])
 
     def ha_network_removed(self):
+        if not self.ha_port:
+            LOG.debug('Error while removing HA network for %s - no port',
+                      self.router_id)
+            return
         self.driver.unplug(self.get_ha_device_name(),
                            namespace=self.ha_namespace,
                            prefix=HA_DEV_PREFIX)
@@ -297,7 +305,9 @@ class HaRouter(router.RouterInfo):
         if device.addr.list(to=ip_cidr):
             super(HaRouter, self).remove_floating_ip(device, ip_cidr)
 
-    def internal_network_updated(self, interface_name, ip_cidrs):
+    def internal_network_updated(self, interface_name, ip_cidrs, mtu):
+        self.driver.set_mtu(interface_name, mtu, namespace=self.ns_name,
+                            prefix=router.INTERNAL_DEV_PREFIX)
         self._clear_vips(interface_name)
         self._disable_ipv6_addressing_on_interface(interface_name)
         for ip_cidr in ip_cidrs:
@@ -361,6 +371,10 @@ class HaRouter(router.RouterInfo):
             self.router_id, IP_MONITOR_PROCESS_SERVICE, pm)
 
     def destroy_state_change_monitor(self, process_monitor):
+        if not self.ha_port:
+            LOG.debug('Error while destroying state change monitor for %s - '
+                      'no port', self.router_id)
+            return
         pm = self._get_state_change_monitor_process_manager()
         process_monitor.unregister(
             self.router_id, IP_MONITOR_PROCESS_SERVICE)
@@ -439,7 +453,7 @@ class HaRouter(router.RouterInfo):
                 self.ha_port['status'] == n_consts.PORT_STATUS_ACTIVE):
             self.enable_keepalived()
 
-    @common_utils.synchronized('enable_radvd')
+    @runtime.synchronized('enable_radvd')
     def enable_radvd(self, internal_ports=None):
         if (self.keepalived_manager.get_process().active and
                 self.ha_state == 'master'):

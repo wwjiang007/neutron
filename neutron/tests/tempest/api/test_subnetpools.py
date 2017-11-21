@@ -13,9 +13,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from tempest.common import utils
 from tempest.lib.common.utils import data_utils
 from tempest.lib import decorators
-from tempest import test
 
 from neutron.tests.tempest.api import base
 
@@ -105,7 +105,7 @@ class SubnetPoolsTest(SubnetPoolsTestBase):
                       "Created subnetpool name should be in the list")
 
     @decorators.idempotent_id('c72c1c0c-2193-4aca-ddd4-b1442640bbbb')
-    @test.requires_ext(extension="standard-attr-description",
+    @utils.requires_ext(extension="standard-attr-description",
                        service="network")
     def test_create_update_subnetpool_description(self):
         body = self._create_subnetpool(description='d1')
@@ -135,7 +135,7 @@ class SubnetPoolsTest(SubnetPoolsTestBase):
         self.assertFalse(subnetpool['shared'])
 
     @decorators.idempotent_id('5bf9f1e2-efc8-4195-acf3-d12b2bd68dd3')
-    @test.requires_ext(extension="project-id", service="network")
+    @utils.requires_ext(extension="project-id", service="network")
     def test_show_subnetpool_has_project_id(self):
         subnetpool = self._create_subnetpool()
         body = self.client.show_subnetpool(subnetpool['id'])
@@ -259,7 +259,7 @@ class SubnetPoolsTest(SubnetPoolsTestBase):
         self.assertTrue(cidr.endswith(str(self.max_prefixlen)))
 
     @decorators.idempotent_id('49b44c64-1619-4b29-b527-ffc3c3115dc4')
-    @test.requires_ext(extension='address-scope', service='network')
+    @utils.requires_ext(extension='address-scope', service='network')
     def test_create_subnetpool_associate_address_scope(self):
         address_scope = self.create_address_scope(
             name=data_utils.rand_name('smoke-address-scope'),
@@ -271,7 +271,7 @@ class SubnetPoolsTest(SubnetPoolsTestBase):
                          body['subnetpool']['address_scope_id'])
 
     @decorators.idempotent_id('910b6393-db24-4f6f-87dc-b36892ad6c8c')
-    @test.requires_ext(extension='address-scope', service='network')
+    @utils.requires_ext(extension='address-scope', service='network')
     def test_update_subnetpool_associate_address_scope(self):
         address_scope = self.create_address_scope(
             name=data_utils.rand_name('smoke-address-scope'),
@@ -287,7 +287,7 @@ class SubnetPoolsTest(SubnetPoolsTestBase):
                          body['subnetpool']['address_scope_id'])
 
     @decorators.idempotent_id('18302e80-46a3-4563-82ac-ccd1dd57f652')
-    @test.requires_ext(extension='address-scope', service='network')
+    @utils.requires_ext(extension='address-scope', service='network')
     def test_update_subnetpool_associate_another_address_scope(self):
         address_scope = self.create_address_scope(
             name=data_utils.rand_name('smoke-address-scope'),
@@ -308,7 +308,7 @@ class SubnetPoolsTest(SubnetPoolsTestBase):
                          body['subnetpool']['address_scope_id'])
 
     @decorators.idempotent_id('f8970048-e41b-42d6-934b-a1297b07706a')
-    @test.requires_ext(extension='address-scope', service='network')
+    @utils.requires_ext(extension='address-scope', service='network')
     def test_update_subnetpool_disassociate_address_scope(self):
         address_scope = self.create_address_scope(
             name=data_utils.rand_name('smoke-address-scope'),
@@ -323,6 +323,15 @@ class SubnetPoolsTest(SubnetPoolsTestBase):
                                       address_scope_id=None)
         body = self.client.show_subnetpool(pool_id)
         self.assertIsNone(body['subnetpool']['address_scope_id'])
+
+    @decorators.idempotent_id('4c6963c2-f54c-4347-b288-75d18421c4c4')
+    @utils.requires_ext(extension='default-subnetpools', service='network')
+    def test_tenant_create_non_default_subnetpool(self):
+        """
+        Test creates a subnetpool, the "is_default" attribute is False.
+        """
+        created_subnetpool = self._create_subnetpool()
+        self.assertFalse(created_subnetpool['is_default'])
 
 
 class SubnetPoolsTestV6(SubnetPoolsTest):

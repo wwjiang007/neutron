@@ -13,10 +13,10 @@
 #    under the License.
 
 import functools
-import netaddr
 import os
 import time
 
+import netaddr
 from oslo_utils import uuidutils
 
 from neutron.agent.l3 import ha_router
@@ -93,8 +93,8 @@ class TestLegacyL3Agent(TestL3Agent):
         return namespaces.build_ns_name(namespaces.NS_PREFIX, router_id)
 
     def _assert_namespace_exists(self, ns_name):
-        ip = ip_lib.IPWrapper(ns_name)
-        common_utils.wait_until_true(lambda: ip.netns.exists(ns_name))
+        common_utils.wait_until_true(
+            lambda: ip_lib.network_namespace_exists(ns_name))
 
     def test_namespace_exists(self):
         tenant_id = uuidutils.generate_uuid()
@@ -109,6 +109,34 @@ class TestLegacyL3Agent(TestL3Agent):
             self._get_namespace(router['id']),
             self.environment.hosts[0].l3_agent.get_namespace_suffix(), )
         self._assert_namespace_exists(namespace)
+
+    def test_mtu_update(self):
+        tenant_id = uuidutils.generate_uuid()
+
+        router = self.safe_client.create_router(tenant_id)
+        network = self.safe_client.create_network(tenant_id)
+        subnet = self.safe_client.create_subnet(
+            tenant_id, network['id'], '20.0.0.0/24', gateway_ip='20.0.0.1')
+        self.safe_client.add_router_interface(router['id'], subnet['id'])
+
+        namespace = "%s@%s" % (
+            self._get_namespace(router['id']),
+            self.environment.hosts[0].l3_agent.get_namespace_suffix(), )
+        self._assert_namespace_exists(namespace)
+
+        ip = ip_lib.IPWrapper(namespace)
+        common_utils.wait_until_true(lambda: ip.get_devices())
+
+        devices = ip.get_devices()
+        self.assertEqual(1, len(devices))
+
+        ri_dev = devices[0]
+        mtu = ri_dev.link.mtu
+        self.assertEqual(1500, mtu)
+
+        mtu -= 1
+        network = self.safe_client.update_network(network['id'], mtu=mtu)
+        common_utils.wait_until_true(lambda: ri_dev.link.mtu == mtu)
 
     def test_east_west_traffic(self):
         tenant_id = uuidutils.generate_uuid()
@@ -204,9 +232,12 @@ class TestHAL3Agent(TestL3Agent):
 
         tenant_id = uuidutils.generate_uuid()
         router = self.safe_client.create_router(tenant_id, ha=True)
-        agents = self.client.list_l3_agent_hosting_routers(router['id'])
-        self.assertEqual(2, len(agents['agents']),
-                         'HA router must be scheduled to both nodes')
+
+        common_utils.wait_until_true(
+            lambda:
+            len(self.client.list_l3_agent_hosting_routers(
+                router['id'])['agents']) == 2,
+            timeout=90)
 
         common_utils.wait_until_true(
             functools.partial(

@@ -10,12 +10,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import mock
 from oslo_utils import uuidutils
 import testscenarios
 
 from neutron.objects import base as obj_base
 from neutron.objects import network
 from neutron.objects import ports
+from neutron.objects.qos import binding
 from neutron.objects.qos import policy
 from neutron.tests import tools
 from neutron.tests.unit.objects import test_base as obj_test_base
@@ -232,6 +234,12 @@ class PortDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
 
         obj = ports.Port.get_object(self.context, id=obj.id)
         self.assertEqual(groups, obj.security_group_ids)
+        self.assertEqual([obj],
+                         ports.Port.get_objects(
+                             self.context, security_group_ids=(sg1_id, )))
+        self.assertEqual([obj],
+                         ports.Port.get_objects(
+                             self.context, security_group_ids=(sg2_id, )))
 
         sg3_id = self._create_test_security_group_id()
         obj.security_group_ids = {sg3_id}
@@ -262,7 +270,8 @@ class PortDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
         obj = ports.Port.get_object(self.context, id=obj.id)
         self.assertIn(sg2_id, obj.security_group_ids)
 
-    def test_qos_policy_id(self):
+    @mock.patch.object(policy.QosPolicy, 'unset_default')
+    def test_qos_policy_id(self, *mocks):
         policy_obj = policy.QosPolicy(self.context)
         policy_obj.create()
 
@@ -288,7 +297,8 @@ class PortDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
         obj = ports.Port.get_object(self.context, id=obj.id)
         self.assertIsNone(obj.qos_policy_id)
 
-    def test__attach_qos_policy(self):
+    @mock.patch.object(policy.QosPolicy, 'unset_default')
+    def test__attach_qos_policy(self, *mocks):
         obj = self._make_object(self.obj_fields[0])
         obj.create()
 
@@ -298,6 +308,10 @@ class PortDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
 
         obj = ports.Port.get_object(self.context, id=obj.id)
         self.assertEqual(policy_obj.id, obj.qos_policy_id)
+        qos_binding_obj = binding.QosPolicyPortBinding.get_object(
+            self.context, port_id=obj.id)
+        self.assertEqual(qos_binding_obj.policy_id, obj.qos_policy_id)
+        old_policy_id = policy_obj.id
 
         policy_obj2 = policy.QosPolicy(self.context)
         policy_obj2.create()
@@ -305,6 +319,12 @@ class PortDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
 
         obj = ports.Port.get_object(self.context, id=obj.id)
         self.assertEqual(policy_obj2.id, obj.qos_policy_id)
+        qos_binding_obj2 = binding.QosPolicyPortBinding.get_object(
+            self.context, port_id=obj.id)
+        self.assertEqual(qos_binding_obj2.policy_id, obj.qos_policy_id)
+        qos_binding_obj = binding.QosPolicyPortBinding.get_objects(
+            self.context, policy_id=old_policy_id)
+        self.assertEqual(0, len(qos_binding_obj))
 
     def test_get_objects_queries_constant(self):
         self.skipTest(

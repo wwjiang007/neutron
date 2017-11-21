@@ -10,6 +10,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.db import constants
 from neutron_lib.db import model_base
 import sqlalchemy as sa
 from sqlalchemy import orm
@@ -84,6 +85,9 @@ class PortDNS(model_base.BASEV2):
     previous_dns_domain = sa.Column(sa.String(255),
                                     nullable=False)
     dns_name = sa.Column(sa.String(255), nullable=False)
+    dns_domain = sa.Column(sa.String(constants.FQDN_FIELD_SIZE),
+                           nullable=False,
+                           server_default='')
     # Add a relationship to the Port model in order to instruct
     # SQLAlchemy to eagerly load this association
     port = orm.relationship(models_v2.Port,

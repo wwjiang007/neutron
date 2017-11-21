@@ -16,7 +16,6 @@
 from tempest.lib.common.utils import data_utils
 from tempest.lib import decorators
 from tempest.lib import exceptions as lib_exc
-from tempest import test
 import testtools
 
 from neutron.tests.tempest.api import base
@@ -34,35 +33,27 @@ class FloatingIPAdminTestJSON(base.BaseAdminNetworkTest):
         super(FloatingIPAdminTestJSON, cls).resource_setup()
         cls.ext_net_id = CONF.network.public_network_id
         cls.floating_ip = cls.create_floatingip(cls.ext_net_id)
-        cls.alt_client = cls.alt_manager.network_client
+        cls.alt_client = cls.os_alt.network_client
         cls.network = cls.create_network()
         cls.subnet = cls.create_subnet(cls.network)
-        cls.router = cls.create_router(data_utils.rand_name('router-'),
+        cls.router = cls.create_router(data_utils.rand_name('router'),
                                        external_network_id=cls.ext_net_id)
         cls.create_router_interface(cls.router['id'], cls.subnet['id'])
         cls.port = cls.create_port(cls.network)
 
-    @test.attr(type='negative')
+    @decorators.attr(type='negative')
     @decorators.idempotent_id('11116ee9-4e99-5b15-b8e1-aa7df92ca589')
-    def test_associate_floating_ip_with_port_from_another_tenant(self):
-        if not CONF.identity_feature_enabled.api_v2_admin:
-            # TODO(ihrachys) adopt to v3
-            raise self.skipException('Identity v2 admin not available')
-        body = self.admin_client.create_floatingip(
+    def test_associate_floating_ip_with_port_from_another_project(self):
+        body = self.client.create_floatingip(
             floating_network_id=self.ext_net_id)
         floating_ip = body['floatingip']
-        test_tenant = data_utils.rand_name('test_tenant_')
-        test_description = data_utils.rand_name('desc_')
-        tenant = self.identity_admin_client.create_tenant(
-            name=test_tenant, description=test_description)['tenant']
-        tenant_id = tenant['id']
-        self.addCleanup(self.identity_admin_client.delete_tenant, tenant_id)
+        project_id = self.create_project()['id']
 
         port = self.admin_client.create_port(network_id=self.network['id'],
-                                             tenant_id=tenant_id)
+                                             project_id=project_id)
         self.addCleanup(self.admin_client.delete_port, port['port']['id'])
         self.assertRaises(lib_exc.BadRequest,
-                          self.admin_client.update_floatingip,
+                          self.client.update_floatingip,
                           floating_ip['id'], port_id=port['port']['id'])
 
     @testtools.skipUnless(

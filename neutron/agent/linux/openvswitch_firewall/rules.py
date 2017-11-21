@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
+
 import netaddr
 from neutron_lib import constants as n_consts
 from oslo_log import log as logging
@@ -46,6 +48,110 @@ def is_valid_prefix(ip_prefix):
             str(netaddr.IPNetwork(ip_prefix)) not in FORBIDDEN_PREFIXES)
 
 
+def _assert_mergeable_rules(rule_conj_list):
+    """Assert a given (rule, conj_ids) list has mergeable rules.
+
+    The given rules must be the same except for port_range_{min,max}
+    differences.
+    """
+    rule_tmpl = rule_conj_list[0][0].copy()
+    rule_tmpl.pop('port_range_min', None)
+    rule_tmpl.pop('port_range_max', None)
+    for rule, conj_id in rule_conj_list[1:]:
+        rule1 = rule.copy()
+        rule1.pop('port_range_min', None)
+        rule1.pop('port_range_max', None)
+        if rule_tmpl != rule1:
+            raise RuntimeError(
+                "Incompatible SG rules detected: %(rule1)s and %(rule2)s. "
+                "They cannot be merged. This should not happen." %
+                {'rule1': rule_tmpl, 'rule2': rule})
+
+
+def merge_common_rules(rule_conj_list):
+    """Take a list of (rule, conj_id) and merge elements with the same rules.
+    Return a list of (rule, conj_id_list).
+    """
+    if len(rule_conj_list) == 1:
+        rule, conj_id = rule_conj_list[0]
+        return [(rule, [conj_id])]
+
+    _assert_mergeable_rules(rule_conj_list)
+    rule_conj_map = collections.defaultdict(list)
+    for rule, conj_id in rule_conj_list:
+        rule_conj_map[(rule.get('port_range_min'),
+                       rule.get('port_range_max'))].append(conj_id)
+
+    result = []
+    rule_tmpl = rule_conj_list[0][0]
+    rule_tmpl.pop('port_range_min', None)
+    rule_tmpl.pop('port_range_max', None)
+    for (port_min, port_max), conj_ids in rule_conj_map.items():
+        rule = rule_tmpl.copy()
+        if port_min is not None:
+            rule['port_range_min'] = port_min
+        if port_max is not None:
+            rule['port_range_max'] = port_max
+        result.append((rule, conj_ids))
+    return result
+
+
+def _merge_port_ranges_helper(port_range_item):
+    # Sort with 'port' but 'min' things must come first.
+    port, m, dummy = port_range_item
+    return port * 2 + (0 if m == 'min' else 1)
+
+
+def merge_port_ranges(rule_conj_list):
+    """Take a list of (rule, conj_id) and transform into a list
+    whose rules don't overlap. Return a list of (rule, conj_id_list).
+    """
+    if len(rule_conj_list) == 1:
+        rule, conj_id = rule_conj_list[0]
+        return [(rule, [conj_id])]
+
+    _assert_mergeable_rules(rule_conj_list)
+    port_ranges = []
+    for rule, conj_id in rule_conj_list:
+        port_ranges.append((rule.get('port_range_min', 1), 'min', conj_id))
+        port_ranges.append((rule.get('port_range_max', 65535), 'max', conj_id))
+
+    port_ranges.sort(key=_merge_port_ranges_helper)
+
+    # The idea here is to scan the port_ranges list in an ascending order,
+    # keeping active conjunction IDs and range in cur_conj and cur_range_min.
+    # A 'min' port_ranges item means an addition to cur_conj, while a 'max'
+    # item means a removal.
+    result = []
+    rule_tmpl = rule_conj_list[0][0]
+    cur_conj = set()
+    cur_range_min = None
+    for port, m, conj_id in port_ranges:
+        if m == 'min':
+            if cur_conj and cur_range_min != port:
+                rule = rule_tmpl.copy()
+                rule['port_range_min'] = cur_range_min
+                rule['port_range_max'] = port - 1
+                result.append((rule, list(cur_conj)))
+            cur_range_min = port
+            cur_conj.add(conj_id)
+        else:
+            if cur_range_min <= port:
+                rule = rule_tmpl.copy()
+                rule['port_range_min'] = cur_range_min
+                rule['port_range_max'] = port
+                result.append((rule, list(cur_conj)))
+                # The next port range without 'port' starts from (port + 1)
+                cur_range_min = port + 1
+            cur_conj.remove(conj_id)
+
+    if (len(result) == 1 and result[0][0]['port_range_min'] == 1 and
+        result[0][0]['port_range_max'] == 65535):
+        del result[0][0]['port_range_min']
+        del result[0][0]['port_range_max']
+    return result
+
+
 def create_flows_from_rule_and_port(rule, port):
     ethertype = rule['ethertype']
     direction = rule['direction']
@@ -77,11 +183,9 @@ def populate_flow_common(direction, flow_template, port):
     """Initialize common flow fields."""
     if direction == firewall.INGRESS_DIRECTION:
         flow_template['table'] = ovs_consts.RULES_INGRESS_TABLE
-        flow_template['dl_dst'] = port.mac
-        flow_template['actions'] = "strip_vlan,output:{:d}".format(port.ofport)
+        flow_template['actions'] = "output:{:d}".format(port.ofport)
     elif direction == firewall.EGRESS_DIRECTION:
         flow_template['table'] = ovs_consts.RULES_EGRESS_TABLE
-        flow_template['dl_src'] = port.mac
         # Traffic can be both ingress and egress, check that no ingress rules
         # should be applied
         flow_template['actions'] = 'resubmit(,{:d})'.format(
@@ -94,21 +198,20 @@ def create_protocol_flows(direction, flow_template, port, rule):
                                          flow_template.copy(),
                                          port)
     protocol = rule.get('protocol')
-    if protocol:
-        if (rule.get('ethertype') == n_consts.IPv6 and
-                protocol == n_consts.PROTO_NAME_ICMP):
-            flow_template['nw_proto'] = n_consts.PROTO_NUM_IPV6_ICMP
-        else:
-            flow_template['nw_proto'] = n_consts.IP_PROTOCOL_MAP.get(
-                protocol, protocol)
+    if protocol is not None:
+        flow_template['nw_proto'] = protocol
 
-    flows = create_port_range_flows(flow_template, rule)
+    if protocol in [n_consts.PROTO_NUM_ICMP, n_consts.PROTO_NUM_IPV6_ICMP]:
+        flows = create_icmp_flows(flow_template, rule)
+    else:
+        flows = create_port_range_flows(flow_template, rule)
     return flows or [flow_template]
 
 
 def create_port_range_flows(flow_template, rule):
-    protocol = rule.get('protocol')
-    if protocol not in ovsfw_consts.PROTOCOLS_WITH_PORTS:
+    protocol = ovsfw_consts.REVERSE_IP_PROTOCOL_MAP_WITH_PORTS.get(
+        rule.get('protocol'))
+    if protocol is None:
         return []
     flows = []
     src_port_match = '{:s}_src'.format(protocol)
@@ -142,6 +245,19 @@ def create_port_range_flows(flow_template, rule):
             flows.append(flow)
 
     return flows
+
+
+def create_icmp_flows(flow_template, rule):
+    icmp_type = rule.get('port_range_min')
+    if icmp_type is None:
+        return
+    flow = flow_template.copy()
+    flow['icmp_type'] = icmp_type
+
+    icmp_code = rule.get('port_range_max')
+    if icmp_code is not None:
+        flow['icmp_code'] = icmp_code
+    return [flow]
 
 
 def create_flows_for_ip_address(ip_address, direction, ethertype,

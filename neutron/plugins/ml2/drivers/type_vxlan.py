@@ -13,14 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib import constants as p_const
 from neutron_lib import exceptions as n_exc
 from oslo_config import cfg
 from oslo_log import log
 
-from neutron._i18n import _LE
 from neutron.conf.plugins.ml2.drivers import driver_type
-from neutron.db.models.plugins.ml2 import vxlanallocation as vxlan_model
-from neutron.plugins.common import constants as p_const
+from neutron.objects.plugins.ml2 import vxlanallocation as vxlan_obj
 from neutron.plugins.ml2.drivers import type_tunnel
 
 LOG = log.getLogger(__name__)
@@ -32,7 +31,7 @@ class VxlanTypeDriver(type_tunnel.EndpointTunnelTypeDriver):
 
     def __init__(self):
         super(VxlanTypeDriver, self).__init__(
-            vxlan_model.VxlanAllocation, vxlan_model.VxlanEndpoints)
+            vxlan_obj.VxlanAllocation, vxlan_obj.VxlanEndpoint)
 
     def get_type(self):
         return p_const.TYPE_VXLAN
@@ -41,8 +40,8 @@ class VxlanTypeDriver(type_tunnel.EndpointTunnelTypeDriver):
         try:
             self._initialize(cfg.CONF.ml2_type_vxlan.vni_ranges)
         except n_exc.NetworkTunnelRangeError:
-            LOG.exception(_LE("Failed to parse vni_ranges. "
-                              "Service terminated!"))
+            LOG.exception("Failed to parse vni_ranges. "
+                          "Service terminated!")
             raise SystemExit()
 
     def get_endpoints(self):

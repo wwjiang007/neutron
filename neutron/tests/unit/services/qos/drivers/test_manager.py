@@ -12,15 +12,17 @@
 
 import mock
 from neutron_lib.api.definitions import portbindings
+from neutron_lib import constants as lib_consts
 from neutron_lib import context
+from neutron_lib.services.qos import base as qos_driver_base
+from neutron_lib.services.qos import constants as qos_consts
 from oslo_utils import uuidutils
 
 from neutron.common import constants
+from neutron.common import exceptions
 from neutron.objects import ports as ports_object
 from neutron.objects.qos import rule as rule_object
-from neutron.services.qos.drivers import base as qos_driver_base
 from neutron.services.qos.drivers import manager as driver_mgr
-from neutron.services.qos import qos_consts
 from neutron.tests.unit.services.qos import base
 
 
@@ -94,7 +96,7 @@ class TestQoSDriversRulesValidations(TestQosDriversManagerBase):
                     qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
                         "min_kbps": {'type:values': None},
                         'direction': {
-                            'type:values': constants.VALID_DIRECTIONS}
+                            'type:values': lib_consts.VALID_DIRECTIONS}
                     }
                 },
                 'vif_types': [portbindings.VIF_TYPE_OVS],
@@ -143,7 +145,7 @@ class TestQoSDriversRulesValidations(TestQosDriversManagerBase):
 
 class TestQosDriversManagerRules(TestQosDriversManagerBase):
     """Test supported rules"""
-    def test_available_rules(self):
+    def test_available_rules_one_in_common(self):
         driver_manager = self._create_manager_with_drivers({
             'driver-A': {
                 'is_loaded': True,
@@ -155,7 +157,7 @@ class TestQosDriversManagerRules(TestQosDriversManagerBase):
                     qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
                         "min_kbps": {'type:values': None},
                         'direction': {
-                            'type:values': constants.VALID_DIRECTIONS}
+                            'type:values': lib_consts.VALID_DIRECTIONS}
                     }
                 }
             },
@@ -165,16 +167,147 @@ class TestQosDriversManagerRules(TestQosDriversManagerBase):
                     qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
                         "min_kbps": {'type:values': None},
                         'direction': {
-                            'type:values': constants.VALID_DIRECTIONS}
+                            'type:values': lib_consts.VALID_DIRECTIONS}
                     },
                     qos_consts.RULE_TYPE_DSCP_MARKING: {
                         "dscp_mark": {
-                            'type:values': constants.VALID_DSCP_MARKS}
+                            'type:values': lib_consts.VALID_DSCP_MARKS}
                     }
                 }
             }
         })
         self.assertEqual(driver_manager.supported_rule_types,
-                         set([qos_consts.RULE_TYPE_BANDWIDTH_LIMIT,
-                              qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH,
-                              qos_consts.RULE_TYPE_DSCP_MARKING]))
+                         set([qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH]))
+
+    def test_available_rules_no_rule_in_common(self):
+        driver_manager = self._create_manager_with_drivers({
+            'driver-A': {
+                'is_loaded': True,
+                'rules': {
+                    qos_consts.RULE_TYPE_BANDWIDTH_LIMIT: {
+                        "max_kbps": {'type:values': None},
+                        "max_burst_kbps": {'type:values': None}
+                    }
+                }
+            },
+            'driver-B': {
+                'is_loaded': True,
+                'rules': {
+                    qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
+                        "min_kbps": {'type:values': None},
+                        'direction': {
+                            'type:values': lib_consts.VALID_DIRECTIONS}
+                    },
+                    qos_consts.RULE_TYPE_DSCP_MARKING: {
+                        "dscp_mark": {
+                            'type:values': lib_consts.VALID_DSCP_MARKS}
+                    }
+                }
+            }
+        })
+        self.assertEqual(driver_manager.supported_rule_types, set([]))
+
+    def test__parse_parameter_values(self):
+        range_parameter = {'type:range': [0, 10]}
+        values_parameter = {'type:values': [1, 10, 100, 1000]}
+        expected_parsed_range_parameter = {'start': 0, 'end': 10}
+        expected_parsed_values_parameter = [1, 10, 100, 1000]
+
+        parameter_values, parameter_type = (
+            driver_mgr.QosServiceDriverManager._parse_parameter_values(
+                range_parameter))
+        self.assertEqual(
+            expected_parsed_range_parameter, parameter_values)
+        self.assertEqual(
+            constants.VALUES_TYPE_RANGE, parameter_type)
+
+        parameter_values, parameter_type = (
+            driver_mgr.QosServiceDriverManager._parse_parameter_values(
+                values_parameter))
+        self.assertEqual(
+            expected_parsed_values_parameter, parameter_values)
+        self.assertEqual(
+            constants.VALUES_TYPE_CHOICES, parameter_type)
+
+    def test_supported_rule_type_details(self):
+        driver_manager = self._create_manager_with_drivers({
+            'driver-A': {
+                'is_loaded': True,
+                'rules': {
+                    qos_consts.RULE_TYPE_BANDWIDTH_LIMIT: {
+                        "max_kbps": {'type:range': [0, 1000]},
+                        "max_burst_kbps": {'type:range': [0, 1000]}
+                    }
+                }
+            },
+            'driver-B': {
+                'is_loaded': True,
+                'rules': {
+                    qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
+                        "min_kbps": {'type:range': [0, 1000]},
+                        'direction': {
+                            'type:values': lib_consts.VALID_DIRECTIONS}
+                    },
+                    qos_consts.RULE_TYPE_DSCP_MARKING: {
+                        "dscp_mark": {
+                            'type:values': lib_consts.VALID_DSCP_MARKS}
+                    }
+                }
+            }
+        })
+        expected_rule_type_details = [{
+            'name': 'driver-A',
+            'supported_parameters': [{
+                'parameter_name': 'max_kbps',
+                'parameter_type': constants.VALUES_TYPE_RANGE,
+                'parameter_values': {'start': 0, 'end': 1000}
+            }, {
+                'parameter_name': 'max_burst_kbps',
+                'parameter_type': constants.VALUES_TYPE_RANGE,
+                'parameter_values': {'start': 0, 'end': 1000}
+            }]
+        }]
+        bandwidth_limit_details = driver_manager.supported_rule_type_details(
+            qos_consts.RULE_TYPE_BANDWIDTH_LIMIT)
+        self.assertEqual(
+            len(expected_rule_type_details), len(bandwidth_limit_details))
+        self.assertEqual(
+            expected_rule_type_details[0]['name'],
+            bandwidth_limit_details[0]['name'])
+        self.assertEqual(
+            len(expected_rule_type_details[0]['supported_parameters']),
+            len(bandwidth_limit_details[0]['supported_parameters'])
+        )
+        for parameter in expected_rule_type_details[0]['supported_parameters']:
+            self.assertIn(
+                parameter,
+                bandwidth_limit_details[0]['supported_parameters'])
+
+    def test_supported_rule_type_details_no_drivers_loaded(self):
+        driver_manager = self._create_manager_with_drivers({})
+        self.assertEqual(
+            [],
+            driver_manager.supported_rule_type_details(
+                qos_consts.RULE_TYPE_BANDWIDTH_LIMIT))
+
+
+class TestQosDriversCalls(TestQosDriversManagerBase):
+    """Test QoS driver calls"""
+
+    def setUp(self):
+        super(TestQosDriversCalls, self).setUp()
+        self.driver_manager = self._create_manager_with_drivers(
+            {'driver-A': {'is_loaded': True}})
+
+    def test_implemented_call_methods(self):
+        for method in qos_consts.QOS_CALL_METHODS:
+            with mock.patch.object(qos_driver_base.DriverBase, method) as \
+                    method_fnc:
+                context = mock.Mock()
+                policy = mock.Mock()
+                self.driver_manager.call(method, context, policy)
+                method_fnc.assert_called_once_with(context, policy)
+
+    def test_not_implemented_call_methods(self):
+        self.assertRaises(exceptions.DriverCallError, self.driver_manager.call,
+                          'wrong_method', mock.Mock(), mock.Mock())

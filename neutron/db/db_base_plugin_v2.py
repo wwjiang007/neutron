@@ -16,6 +16,9 @@
 import functools
 
 import netaddr
+from neutron_lib.api.definitions import ip_allocation as ipalloc_apidef
+from neutron_lib.api.definitions import port as port_def
+from neutron_lib.api.definitions import subnetpool as subnetpool_def
 from neutron_lib.api import validators
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import exceptions
@@ -24,6 +27,7 @@ from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context as ctx
 from neutron_lib import exceptions as exc
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 from oslo_db import exception as os_db_exc
@@ -34,10 +38,8 @@ from sqlalchemy import and_
 from sqlalchemy import exc as sql_exc
 from sqlalchemy import not_
 
-from neutron._i18n import _, _LE, _LI
+from neutron._i18n import _
 from neutron.api.rpc.agentnotifiers import l3_rpc_agent_api
-from neutron.api.v2 import attributes
-from neutron.common import constants as n_const
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.common import utils
@@ -51,13 +53,13 @@ from neutron.db import models_v2
 from neutron.db import rbac_db_mixin as rbac_mixin
 from neutron.db import rbac_db_models as rbac_db
 from neutron.db import standardattrdescription_db as stattr_db
-from neutron.extensions import ip_allocation as ipa
 from neutron.extensions import l3
 from neutron import ipam
 from neutron.ipam import exceptions as ipam_exc
 from neutron.ipam import subnet_alloc
 from neutron import neutron_plugin_base_v2
 from neutron.objects import base as base_obj
+from neutron.objects import ports as port_obj
 from neutron.objects import subnetpool as subnetpool_obj
 
 
@@ -71,9 +73,6 @@ LOG = logging.getLogger(__name__)
 # with these owners, it will allow subnet deletion to proceed with the
 # IP allocations being cleaned up by cascade.
 AUTO_DELETE_PORT_OWNERS = [constants.DEVICE_OWNER_DHCP]
-
-DNS_DOMAIN_DEFAULT = 'openstacklocal.'
-FQDN_MAX_LEN = 255
 
 
 def _check_subnet_not_used(context, subnet_id):
@@ -139,6 +138,9 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
     __native_bulk_support = True
     __native_pagination_support = True
     __native_sorting_support = True
+
+    def has_native_datastore(self):
+        return True
 
     def __new__(cls, *args, **kwargs):
         model_query.register_hook(
@@ -353,8 +355,8 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     objects.append(obj_creator(context, item))
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("An exception occurred while creating "
-                              "the %(resource)s:%(item)s"),
+                LOG.error("An exception occurred while creating "
+                          "the %(resource)s:%(item)s",
                           {'resource': resource, 'item': item})
         return objects
 
@@ -376,6 +378,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             args = {'tenant_id': n['tenant_id'],
                     'id': n.get('id') or uuidutils.generate_uuid(),
                     'name': n['name'],
+                    'mtu': n.get('mtu'),
                     'admin_state_up': n['admin_state_up'],
                     'status': n.get('status', constants.NET_STATUS_ACTIVE),
                     'description': n.get('description')}
@@ -463,20 +466,33 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         return self._make_network_dict(network, fields, context=context)
 
     @db_api.retry_if_session_inactive()
+    def _get_networks(self, context, filters=None, fields=None,
+                      sorts=None, limit=None, marker=None,
+                      page_reverse=False):
+        marker_obj = ndb_utils.get_marker_obj(self, context, 'network',
+                                              limit, marker)
+        return model_query.get_collection(
+            context, models_v2.Network,
+            # if caller needs postprocessing, it should implement it explicitly
+            dict_func=None,
+            filters=filters, fields=fields,
+            sorts=sorts,
+            limit=limit,
+            marker_obj=marker_obj,
+            page_reverse=page_reverse)
+
+    @db_api.retry_if_session_inactive()
     def get_networks(self, context, filters=None, fields=None,
                      sorts=None, limit=None, marker=None,
                      page_reverse=False):
-        marker_obj = ndb_utils.get_marker_obj(self, context, 'network',
-                                              limit, marker)
         make_network_dict = functools.partial(self._make_network_dict,
                                               context=context)
-        return model_query.get_collection(context, models_v2.Network,
-                                          make_network_dict,
-                                          filters=filters, fields=fields,
-                                          sorts=sorts,
-                                          limit=limit,
-                                          marker_obj=marker_obj,
-                                          page_reverse=page_reverse)
+        return [
+            make_network_dict(net, fields)
+            for net in self._get_networks(
+                context, filters=filters, fields=fields, sorts=sorts,
+                limit=limit, marker=marker, page_reverse=page_reverse)
+        ]
 
     @db_api.retry_if_session_inactive()
     def get_networks_count(self, context, filters=None):
@@ -552,6 +568,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             # executed concurrently
             if cur_subnet and not ipv6_utils.is_ipv6_pd_enabled(s):
                 with db_api.context_manager.reader.using(context):
+                    # TODO(electrocucaracha): Look a solution for Join in OVO
                     ipal = models_v2.IPAllocation
                     alloc_qry = context.session.query(ipal)
                     alloc_qry = alloc_qry.join("port", "routerport")
@@ -621,11 +638,11 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             raise exc.BadRequest(resource='subnets', msg=reason)
 
     def _update_router_gw_ports(self, context, network, subnet):
-        l3plugin = directory.get_plugin(constants.L3)
+        l3plugin = directory.get_plugin(plugin_constants.L3)
         if l3plugin:
             gw_ports = self._get_router_gw_ports_by_network(context,
                     network['id'])
-            router_ids = [p['device_id'] for p in gw_ports]
+            router_ids = [p.device_id for p in gw_ports]
             for id in router_ids:
                 try:
                     self._update_router_gw_port(context, id, network, subnet)
@@ -635,7 +652,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                               {'id': id, 's': subnet})
 
     def _update_router_gw_port(self, context, router_id, network, subnet):
-        l3plugin = directory.get_plugin(constants.L3)
+        l3plugin = directory.get_plugin(plugin_constants.L3)
         ctx_admin = context.elevated()
         ext_subnets_dict = {s['id']: s for s in network['subnets']}
         router = l3plugin.get_router(ctx_admin, router_id)
@@ -759,7 +776,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     subnetpool_id = None
                     self._validate_subnet(context, s)
                 else:
-                    prefix = n_const.PROVISIONAL_IPV6_PD_PREFIX
+                    prefix = constants.PROVISIONAL_IPV6_PD_PREFIX
                     subnet['subnet']['cidr'] = prefix
                     self._validate_subnet_for_pd(s)
         else:
@@ -915,24 +932,16 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
     @db_api.context_manager.reader
     def _subnet_get_user_allocation(self, context, subnet_id):
         """Check if there are any user ports on subnet and return first."""
-        # need to join with ports table as IPAllocation's port
-        # is not joined eagerly and thus producing query which yields
-        # incorrect results
-        return (context.session.query(models_v2.IPAllocation).
-                filter_by(subnet_id=subnet_id).join(models_v2.Port).
-                filter(~models_v2.Port.device_owner.
-                       in_(AUTO_DELETE_PORT_OWNERS)).first())
+        return port_obj.IPAllocation.get_alloc_by_subnet_id(
+            context, subnet_id, AUTO_DELETE_PORT_OWNERS)
 
     @db_api.context_manager.reader
     def _subnet_check_ip_allocations_internal_router_ports(self, context,
                                                            subnet_id):
         # Do not delete the subnet if IP allocations for internal
         # router ports still exist
-        allocs = context.session.query(models_v2.IPAllocation).filter_by(
-                subnet_id=subnet_id).join(models_v2.Port).filter(
-                        models_v2.Port.device_owner.in_(
-                            constants.ROUTER_INTERFACE_OWNERS)
-                ).first()
+        allocs = port_obj.IPAllocation.get_alloc_by_subnet_id(
+            context, subnet_id, constants.ROUTER_INTERFACE_OWNERS, False)
         if allocs:
             LOG.debug("Subnet %s still has internal router ports, "
                       "cannot delete", subnet_id)
@@ -946,7 +955,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             if auto_subnet:
                 # special flag to avoid re-allocation on auto subnets
                 fixed.append({'subnet_id': sub_id, 'delete_subnet': True})
-            data = {attributes.PORT: {'fixed_ips': fixed}}
+            data = {port_def.RESOURCE_NAME: {'fixed_ips': fixed}}
             self.update_port(context, port_id, data)
         except exc.PortNotFound:
             # port is gone
@@ -958,9 +967,9 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
     def _ensure_no_user_ports_on_subnet(self, context, id):
         alloc = self._subnet_get_user_allocation(context, id)
         if alloc:
-            LOG.info(_LI("Found port (%(port_id)s, %(ip)s) having IP "
-                         "allocation on subnet "
-                         "%(subnet)s, cannot delete"),
+            LOG.info("Found port (%(port_id)s, %(ip)s) having IP "
+                     "allocation on subnet "
+                     "%(subnet)s, cannot delete",
                      {'ip': alloc.ip_address,
                       'port_id': alloc.port_id,
                       'subnet': id})
@@ -1158,7 +1167,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
 
         for key in ['min_prefixlen', 'max_prefixlen', 'default_prefixlen']:
             updated['key'] = str(updated[key])
-        resource_extend.apply_funcs(attributes.SUBNETPOOLS,
+        resource_extend.apply_funcs(subnetpool_def.COLLECTION_NAME,
                                     updated, orig_sp.db_obj)
         return updated
 
@@ -1259,13 +1268,15 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             try:
                 self.ipam.allocate_ips_for_port_and_store(
                     context, port, port_id)
-                db_port['ip_allocation'] = ipa.IP_ALLOCATION_IMMEDIATE
+                db_port['ip_allocation'] = (ipalloc_apidef.
+                                            IP_ALLOCATION_IMMEDIATE)
             except ipam_exc.DeferIpam:
-                db_port['ip_allocation'] = ipa.IP_ALLOCATION_DEFERRED
+                db_port['ip_allocation'] = (ipalloc_apidef.
+                                            IP_ALLOCATION_DEFERRED)
             fixed_ips = p['fixed_ips']
             if validators.is_attr_set(fixed_ips) and not fixed_ips:
                 # [] was passed explicitly as fixed_ips. An unaddressed port.
-                db_port['ip_allocation'] = ipa.IP_ALLOCATION_NONE
+                db_port['ip_allocation'] = ipalloc_apidef.IP_ALLOCATION_NONE
 
         return db_port
 
@@ -1406,7 +1417,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     except l3.RouterNotFound:
                         return
                 else:
-                    l3plugin = directory.get_plugin(constants.L3)
+                    l3plugin = directory.get_plugin(plugin_constants.L3)
                     if l3plugin:
                         try:
                             ctx_admin = context.elevated()

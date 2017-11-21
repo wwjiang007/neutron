@@ -12,8 +12,8 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+from tempest.common import utils
 from tempest.lib import decorators
-from tempest import test
 
 from neutron.tests.tempest import config
 from neutron.tests.tempest.scenario import base
@@ -40,7 +40,7 @@ class NetworkTestMixin(object):
         port_id = self.client.list_ports(
             network_id=network_id,
             device_owner=constants.DEVICE_OWNER_ROUTER_SNAT)['ports'][0]['id']
-        self.admin_manager.network_client.update_port(
+        self.os_admin.network_client.update_port(
             port_id, admin_state_up=False)
 
 
@@ -49,7 +49,7 @@ class NetworkDvrTest(base.BaseTempestTestCase, NetworkTestMixin):
     force_tenant_isolation = False
 
     @classmethod
-    @test.requires_ext(extension="dvr", service="network")
+    @utils.requires_ext(extension="dvr", service="network")
     def skip_checks(cls):
         super(NetworkDvrTest, cls).skip_checks()
 

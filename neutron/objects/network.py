@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.api.definitions import availability_zone as az_def
+from neutron_lib.api.validators import availability_zone as az_validator
 from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fields as obj_fields
 
@@ -20,15 +22,39 @@ from neutron.db.models import dns as dns_models
 from neutron.db.models import external_net as ext_net_model
 from neutron.db.models import segment as segment_model
 from neutron.db import models_v2
+from neutron.db.network_dhcp_agent_binding import models as ndab_models
 from neutron.db.port_security import models as ps_models
-from neutron.db.qos import models as qos_models
 from neutron.db import rbac_db_models
-from neutron.extensions import availability_zone as az_ext
+from neutron.objects import agent as agent_obj
 from neutron.objects import base
 from neutron.objects import common_types
-from neutron.objects.db import api as obj_db_api
 from neutron.objects.extensions import port_security as base_ps
+from neutron.objects.qos import binding
 from neutron.objects import rbac_db
+
+
+@obj_base.VersionedObjectRegistry.register
+class NetworkDhcpAgentBinding(base.NeutronDbObject):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    db_model = ndab_models.NetworkDhcpAgentBinding
+
+    primary_keys = ['network_id', 'dhcp_agent_id']
+
+    fields = {
+        'network_id': common_types.UUIDField(),
+        'dhcp_agent_id': common_types.UUIDField(),
+    }
+
+    # NOTE(ndahiwade): The join was implemented this way as get_objects
+    # currently doesn't support operators like '<' or '>'
+    @classmethod
+    def get_down_bindings(cls, context, cutoff):
+        agent_objs = agent_obj.Agent.get_objects(context)
+        dhcp_agent_ids = [obj.id for obj in agent_objs
+                          if obj.heartbeat_timestamp < cutoff]
+        return cls.get_objects(context, dhcp_agent_id=dhcp_agent_ids)
 
 
 @obj_base.VersionedObjectRegistry.register
@@ -51,6 +77,8 @@ class NetworkSegment(base.NeutronDbObject):
     }
 
     synthetic_fields = ['hosts']
+
+    fields_no_update = ['network_id']
 
     foreign_keys = {
         'Network': {'network_id': 'id'},
@@ -185,10 +213,6 @@ class Network(rbac_db.NeutronRbacObject):
 
     synthetic_fields = [
         'dns_domain',
-        # MTU is not stored in the database any more, it's a synthetic field
-        # that may be used by plugins to provide a canonical representation for
-        # the resource
-        'mtu',
         'qos_policy_id',
         'security',
         'segments',
@@ -219,18 +243,13 @@ class Network(rbac_db.NeutronRbacObject):
                 self._attach_qos_policy(fields['qos_policy_id'])
 
     def _attach_qos_policy(self, qos_policy_id):
-        # TODO(ihrachys): introduce an object for the binding to isolate
-        # database access in a single place, currently scattered between port
-        # and policy objects
-        obj_db_api.delete_objects(
-            self.obj_context, qos_models.QosNetworkPolicyBinding,
-            network_id=self.id,
-        )
+        binding.QosPolicyNetworkBinding.delete_objects(
+            self.obj_context, network_id=self.id)
         if qos_policy_id:
-            obj_db_api.create_object(
-                self.obj_context, qos_models.QosNetworkPolicyBinding,
-                {'network_id': self.id, 'policy_id': qos_policy_id}
-            )
+            net_binding_obj = binding.QosPolicyNetworkBinding(
+                self.obj_context, policy_id=qos_policy_id, network_id=self.id)
+            net_binding_obj.create()
+
         self.qos_policy_id = qos_policy_id
         self.obj_reset_changes(['qos_policy_id'])
 
@@ -245,17 +264,19 @@ class Network(rbac_db.NeutronRbacObject):
     @classmethod
     def modify_fields_from_db(cls, db_obj):
         result = super(Network, cls).modify_fields_from_db(db_obj)
-        if az_ext.AZ_HINTS in result:
-            result[az_ext.AZ_HINTS] = (
-                az_ext.convert_az_string_to_list(result[az_ext.AZ_HINTS]))
+        if az_def.AZ_HINTS in result:
+            result[az_def.AZ_HINTS] = (
+                az_validator.convert_az_string_to_list(
+                    result[az_def.AZ_HINTS]))
         return result
 
     @classmethod
     def modify_fields_to_db(cls, fields):
         result = super(Network, cls).modify_fields_to_db(fields)
-        if az_ext.AZ_HINTS in result:
-            result[az_ext.AZ_HINTS] = (
-                az_ext.convert_az_list_to_string(result[az_ext.AZ_HINTS]))
+        if az_def.AZ_HINTS in result:
+            result[az_def.AZ_HINTS] = (
+                az_validator.convert_az_list_to_string(
+                    result[az_def.AZ_HINTS]))
         return result
 
     def from_db_object(self, *objs):
@@ -320,4 +341,6 @@ class NetworkDNSDomain(base.NeutronDbObject):
             models_v2.Port, cls.db_model.network_id ==
             models_v2.Port.network_id).filter_by(
                 id=port_id).one_or_none()
+        if net_dns is None:
+            return None
         return super(NetworkDNSDomain, cls)._load_object(context, net_dns)

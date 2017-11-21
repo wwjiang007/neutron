@@ -11,13 +11,13 @@
 #    under the License.
 
 from neutron_lib import constants
+from neutron_lib.services.qos import constants as qos_consts
 
+from oslo_utils import uuidutils
 from oslo_versionedobjects import exception
 
-from neutron.common import constants as n_const
 from neutron.objects.qos import policy
 from neutron.objects.qos import rule
-from neutron.services.qos import qos_consts
 from neutron.tests import base as neutron_test_base
 from neutron.tests.unit.objects import test_base
 from neutron.tests.unit import testlib_api
@@ -119,7 +119,7 @@ class QosBandwidthLimitRuleObjectTestCase(test_base.BaseObjectIfaceTestCase):
         self.assertEqual(qos_consts.RULE_TYPE_BANDWIDTH_LIMIT, dict_['type'])
 
     def test_bandwidth_limit_object_version_degradation(self):
-        self.db_objs[0]['direction'] = n_const.EGRESS_DIRECTION
+        self.db_objs[0]['direction'] = constants.EGRESS_DIRECTION
         rule_obj = rule.QosBandwidthLimitRule(self.context, **self.db_objs[0])
         primitive_rule = rule_obj.obj_to_primitive('1.2')
         self.assertNotIn(
@@ -131,7 +131,7 @@ class QosBandwidthLimitRuleObjectTestCase(test_base.BaseObjectIfaceTestCase):
             self.db_objs[0]['max_burst_kbps'],
             primitive_rule['versioned_object.data']['max_burst_kbps'])
 
-        self.db_objs[0]['direction'] = n_const.INGRESS_DIRECTION
+        self.db_objs[0]['direction'] = constants.INGRESS_DIRECTION
         rule_obj = rule.QosBandwidthLimitRule(self.context, **self.db_objs[0])
         self.assertRaises(
             exception.IncompatibleObjectVersion,
@@ -150,7 +150,8 @@ class QosBandwidthLimitRuleDbObjectTestCase(test_base.BaseDbObjectTestCase,
         for obj in self.db_objs:
             generated_qos_policy_id = obj['qos_policy_id']
             policy_obj = policy.QosPolicy(self.context,
-                                          id=generated_qos_policy_id)
+                                          id=generated_qos_policy_id,
+                                          project_id=uuidutils.generate_uuid())
             policy_obj.create()
 
 
@@ -176,7 +177,8 @@ class QosDscpMarkingRuleDbObjectTestCase(test_base.BaseDbObjectTestCase,
         for obj in self.db_objs:
             generated_qos_policy_id = obj['qos_policy_id']
             policy_obj = policy.QosPolicy(self.context,
-                                          id=generated_qos_policy_id)
+                                          id=generated_qos_policy_id,
+                                          project_id=uuidutils.generate_uuid())
             policy_obj.create()
 
 
@@ -203,5 +205,6 @@ class QosMinimumBandwidthRuleDbObjectTestCase(test_base.BaseDbObjectTestCase,
         for obj in self.db_objs:
             generated_qos_policy_id = obj['qos_policy_id']
             policy_obj = policy.QosPolicy(self.context,
-                                          id=generated_qos_policy_id)
+                                          id=generated_qos_policy_id,
+                                          project_id=uuidutils.generate_uuid())
             policy_obj.create()

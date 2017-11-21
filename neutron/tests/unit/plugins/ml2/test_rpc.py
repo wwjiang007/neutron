@@ -22,7 +22,9 @@ import collections
 import mock
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from neutron_lib.services.qos import constants as qos_consts
 from oslo_config import cfg
 from oslo_context import context as oslo_context
 from sqlalchemy.orm import exc
@@ -30,14 +32,14 @@ from sqlalchemy.orm import exc
 from neutron.agent import rpc as agent_rpc
 from neutron.common import topics
 from neutron.db import provisioning_blocks
+from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2.drivers import type_tunnel
 from neutron.plugins.ml2 import managers
 from neutron.plugins.ml2 import rpc as plugin_rpc
-from neutron.services.qos import qos_consts
 from neutron.tests import base
 
 
-cfg.CONF.import_group('ml2', 'neutron.plugins.ml2.config')
+cfg.CONF.import_group('ml2', 'neutron.conf.plugins.ml2.config')
 
 
 class RpcCallbacksTestCase(base.BaseTestCase):
@@ -49,7 +51,7 @@ class RpcCallbacksTestCase(base.BaseTestCase):
         self.callbacks = plugin_rpc.RpcCallbacks(self.notifier,
                                                  self.type_manager)
         self.plugin = mock.MagicMock()
-        directory.add_plugin(constants.CORE, self.plugin)
+        directory.add_plugin(plugin_constants.CORE, self.plugin)
 
     def _test_update_device_up(self, host=None):
         kwargs = {
@@ -59,7 +61,7 @@ class RpcCallbacksTestCase(base.BaseTestCase):
         }
         with mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin'
                         '._device_to_port_id'),\
-            mock.patch.object(self.callbacks, 'notify_ha_port_status'):
+            mock.patch.object(self.callbacks, 'notify_l2pop_port_wiring'):
             with mock.patch('neutron.db.provisioning_blocks.'
                             'provisioning_complete') as pc:
                 self.callbacks.update_device_up(mock.Mock(), **kwargs)
@@ -212,7 +214,7 @@ class RpcCallbacksTestCase(base.BaseTestCase):
 
     def _test_update_device_not_bound_to_host(self, func):
         self.plugin.port_bound_to_host.return_value = False
-        self.callbacks.notify_ha_port_status = mock.Mock()
+        self.callbacks.notify_l2pop_port_wiring = mock.Mock()
         self.plugin._device_to_port_id.return_value = 'fake_port_id'
         res = func(mock.Mock(), device='fake_device', host='fake_host')
         self.plugin.port_bound_to_host.assert_called_once_with(mock.ANY,
@@ -221,11 +223,12 @@ class RpcCallbacksTestCase(base.BaseTestCase):
         return res
 
     def test_update_device_up_with_device_not_bound_to_host(self):
-        self.assertIsNone(self._test_update_device_not_bound_to_host(
-            self.callbacks.update_device_up))
-        port = self.plugin._get_port.return_value
-        (self.plugin.nova_notifier.notify_port_active_direct.
-         assert_called_once_with(port))
+        with mock.patch.object(ml2_db, 'get_port') as ml2_db_get_port:
+            self.assertIsNone(self._test_update_device_not_bound_to_host(
+                self.callbacks.update_device_up))
+            port = ml2_db_get_port.return_value
+            (self.plugin.nova_notifier.notify_port_active_direct.
+             assert_called_once_with(port))
 
     def test_update_device_down_with_device_not_bound_to_host(self):
         self.assertEqual(
@@ -235,7 +238,7 @@ class RpcCallbacksTestCase(base.BaseTestCase):
 
     def test_update_device_down_call_update_port_status(self):
         self.plugin.update_port_status.return_value = False
-        self.callbacks.notify_ha_port_status = mock.Mock()
+        self.callbacks.notify_l2pop_port_wiring = mock.Mock()
         self.plugin._device_to_port_id.return_value = 'fake_port_id'
         self.assertEqual(
             {'device': 'fake_device', 'exists': False},

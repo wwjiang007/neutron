@@ -18,13 +18,11 @@ import abc
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as const
+from neutron_lib.plugins.ml2 import api
 from oslo_log import log
 import six
 
-from neutron._i18n import _LW
 from neutron.db import provisioning_blocks
-from neutron.plugins.common import constants as p_constants
-from neutron.plugins.ml2 import driver_api as api
 
 LOG = log.getLogger(__name__)
 
@@ -110,8 +108,8 @@ class AgentMechanismDriverBase(api.MechanismDriver):
                         LOG.debug("Bound using segment: %s", segment)
                         return
             else:
-                LOG.warning(_LW("Refusing to bind port %(pid)s to dead agent: "
-                                "%(agent)s"),
+                LOG.warning("Refusing to bind port %(pid)s to dead agent: "
+                            "%(agent)s",
                             {'pid': context.current['id'], 'agent': agent})
 
     @abc.abstractmethod
@@ -250,7 +248,7 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
                  'allowed_network_types': allowed_network_types})
             return False
 
-        if network_type in [p_constants.TYPE_FLAT, p_constants.TYPE_VLAN]:
+        if network_type in [const.TYPE_FLAT, const.TYPE_VLAN]:
             physnet = segment[api.PHYSICAL_NETWORK]
             if not self.physnet_in_mappings(physnet, mappings):
                 LOG.debug(

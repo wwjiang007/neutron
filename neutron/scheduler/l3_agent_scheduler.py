@@ -19,6 +19,7 @@ import functools
 import itertools
 import random
 
+from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib import constants as lib_const
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -26,13 +27,12 @@ from oslo_log import log as logging
 from oslo_log import versionutils
 import six
 
-from neutron._i18n import _LW
 from neutron.common import utils
+from neutron.conf.db import l3_hamode_db
 from neutron.db import api as db_api
-from neutron.db import l3_hamode_db
 from neutron.db.models import l3agent as rb_model
-from neutron.extensions import availability_zone as az_ext
 from neutron.extensions import l3
+from neutron.objects import l3agent as rb_obj
 
 
 LOG = logging.getLogger(__name__)
@@ -93,9 +93,9 @@ class L3Scheduler(object):
         if router_ids is not None:
             versionutils.report_deprecated_feature(
                 LOG,
-                _LW('Passing router_ids has no effect on L3 agent '
-                    'scheduling. This is deprecated and will be '
-                    'removed in the Queens release.'))
+                'Passing router_ids has no effect on L3 agent '
+                'scheduling. This is deprecated and will be '
+                'removed in the Queens release.')
 
         l3_agent = plugin.get_enabled_agent_on_host(
             context, lib_const.AGENT_TYPE_L3, host)
@@ -143,13 +143,13 @@ class L3Scheduler(object):
 
             active_l3_agents = plugin.get_l3_agents(context, active=True)
             if not active_l3_agents:
-                LOG.warning(_LW('No active L3 agents'))
+                LOG.warning('No active L3 agents')
                 return []
             candidates = plugin.get_l3_agent_candidates(context,
                                                         sync_router,
                                                         active_l3_agents)
             if not candidates:
-                LOG.warning(_LW('No L3 agents can host the router %s'),
+                LOG.warning('No L3 agents can host the router %s',
                             sync_router['id'])
 
             return candidates
@@ -188,10 +188,9 @@ class L3Scheduler(object):
         one try, regardless of the error preventing the addition of a new
         RouterL3AgentBinding object to the database.
         """
-        bindings = context.session.query(
-            rb_model.RouterL3AgentBinding).filter_by(router_id=router_id)
 
-        if bindings.filter_by(l3_agent_id=agent_id).first():
+        if rb_obj.RouterL3AgentBinding.objects_exist(
+                context, router_id=router_id, l3_agent_id=agent_id):
             LOG.debug('Router %(router_id)s has already been scheduled '
                       'to L3 agent %(agent_id)s.',
                       {'router_id': router_id, 'agent_id': agent_id})
@@ -199,7 +198,8 @@ class L3Scheduler(object):
 
         if not is_ha:
             binding_index = rb_model.LOWEST_BINDING_INDEX
-            if bindings.filter_by(binding_index=binding_index).first():
+            if rb_obj.RouterL3AgentBinding.objects_exist(
+                    context, router_id=router_id, binding_index=binding_index):
                 LOG.debug('Non-HA router %s has already been scheduled',
                           router_id)
                 return
@@ -214,12 +214,10 @@ class L3Scheduler(object):
                 return
 
         try:
-            with context.session.begin(subtransactions=True):
-                binding = rb_model.RouterL3AgentBinding()
-                binding.l3_agent_id = agent_id
-                binding.router_id = router_id
-                binding.binding_index = binding_index
-                context.session.add(binding)
+            binding = rb_obj.RouterL3AgentBinding(
+                context, l3_agent_id=agent_id,
+                router_id=router_id, binding_index=binding_index)
+            binding.create()
             LOG.debug('Router %(router_id)s is scheduled to L3 agent '
                       '%(agent_id)s with binding_index %(binding_index)d',
                       {'router_id': router_id,
@@ -270,7 +268,7 @@ class L3Scheduler(object):
     def _add_port_from_net_and_ensure_vr_id(self, plugin, ctxt, router_db,
                                             tenant_id, ha_net):
         plugin._ensure_vr_id(ctxt, router_db, ha_net)
-        return plugin.add_ha_port(ctxt, router_db.id, ha_net.network.id,
+        return plugin.add_ha_port(ctxt, router_db.id, ha_net.network_id,
                                   tenant_id)
 
     def create_ha_port_and_bind(self, plugin, context, router_id,
@@ -304,17 +302,26 @@ class L3Scheduler(object):
             LOG.debug("Router %(router)s already scheduled for agent "
                       "%(agent)s", {'router': router_id,
                                     'agent': agent['id']})
+            port_id = port_binding.port_id
+            # Below call will also delete entry from L3HARouterAgentPortBinding
+            # and RouterPort tables
+            plugin._core_plugin.delete_port(context, port_id,
+                                            l3_port_check=False)
         except l3.RouterNotFound:
             LOG.debug('Router %s has already been removed '
                       'by concurrent operation', router_id)
-
-    def get_ha_routers_l3_agents_counts(self, plugin, context, filters=None):
-        """Return a mapping (router, # agents) matching specified filters."""
-        return plugin.get_ha_routers_l3_agents_count(context)
+            # we try to clear the HA network here in case the port we created
+            # blocked the concurrent router delete operation from getting rid
+            # of the HA network
+            ha_net = plugin.get_ha_network(ctxt, tenant_id)
+            if ha_net:
+                plugin.safe_delete_ha_network(ctxt, ha_net, tenant_id)
 
     def _filter_scheduled_agents(self, plugin, context, router_id, candidates):
         hosting = plugin.get_l3_agents_hosting_routers(context, [router_id])
-        return list(set(candidates) - set(hosting))
+        # convert to comparable types
+        hosting_list = [tuple(host) for host in hosting]
+        return list(set(candidates) - set(hosting_list))
 
     def _bind_ha_router(self, plugin, context, router_id,
                         tenant_id, candidates):
@@ -367,7 +374,7 @@ class AZLeastRoutersScheduler(LeastRoutersScheduler):
        according to router's az_hints.
     """
     def _get_az_hints(self, router):
-        return (router.get(az_ext.AZ_HINTS) or
+        return (router.get(az_def.AZ_HINTS) or
                 cfg.CONF.default_availability_zones)
 
     def _get_routers_can_schedule(self, plugin, context, routers, l3_agent):
@@ -397,23 +404,6 @@ class AZLeastRoutersScheduler(LeastRoutersScheduler):
                 candidates.append(agent)
 
         return candidates
-
-    def get_ha_routers_l3_agents_counts(self, plugin, context, filters=None):
-        """Overwrite L3Scheduler's method to filter by availability zone."""
-        all_routers_agents = (
-            super(AZLeastRoutersScheduler, self).
-            get_ha_routers_l3_agents_counts(plugin, context, filters))
-        if filters is None:
-            return all_routers_agents
-
-        routers_agents = []
-        for router, agents in all_routers_agents:
-            az_hints = self._get_az_hints(router)
-            if az_hints and filters['availability_zone'] not in az_hints:
-                continue
-            routers_agents.append((router, agents))
-
-        return routers_agents
 
     def _choose_router_agents_for_ha(self, plugin, context, candidates):
         ordered_agents = plugin.get_l3_agents_ordered_by_num_routers(

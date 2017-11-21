@@ -15,6 +15,8 @@
 
 from neutron_lib.api import converters
 from neutron_lib.api import extensions as api_extensions
+from neutron_lib.api import faults
+from neutron_lib.db import constants as const
 from neutron_lib import exceptions as n_exc
 from neutron_lib.plugins import directory
 from oslo_config import cfg
@@ -25,7 +27,6 @@ from neutron._i18n import _
 from neutron.api import extensions
 from neutron.api.v2 import base
 from neutron.api.v2 import resource
-from neutron.common import constants as const
 from neutron.common import exceptions
 from neutron import quota
 from neutron.quota import resource_registry
@@ -128,6 +129,9 @@ class QuotaSetsController(wsgi.Controller):
 class Quotasv2(api_extensions.ExtensionDescriptor):
     """Quotas management support."""
 
+    extensions.register_custom_supported_check(
+        RESOURCE_COLLECTION, lambda: True, plugin_agnostic=True)
+
     @classmethod
     def get_name(cls):
         return "Quota management support"
@@ -152,7 +156,7 @@ class Quotasv2(api_extensions.ExtensionDescriptor):
         """Returns Ext Resources."""
         controller = resource.Resource(
             QuotaSetsController(directory.get_plugin()),
-            faults=base.FAULT_MAP)
+            faults=faults.FAULT_MAP)
         return [extensions.ResourceExtension(
             Quotasv2.get_alias(),
             controller,

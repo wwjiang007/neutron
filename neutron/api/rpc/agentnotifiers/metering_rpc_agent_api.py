@@ -13,6 +13,7 @@
 # under the License.
 
 from neutron_lib import constants
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_log import log as logging
 import oslo_messaging
@@ -36,7 +37,7 @@ class MeteringAgentNotifyAPI(object):
     def _agent_notification(self, context, method, routers):
         """Notify l3 metering agents hosted by l3 agent hosts."""
         adminContext = context if context.is_admin else context.elevated()
-        plugin = directory.get_plugin(constants.L3)
+        plugin = directory.get_plugin(plugin_constants.L3)
 
         l3_routers = {}
         state = agentschedulers_db.get_admin_state_up_filter()
@@ -69,9 +70,17 @@ class MeteringAgentNotifyAPI(object):
         cctxt = self.client.prepare(fanout=True)
         cctxt.cast(context, method, router_id=router_id)
 
+    def _notification_host(self, context, method, host, **kwargs):
+        """Notify the agent that is hosting the router."""
+        LOG.debug('Notify agent at %(host)s the message '
+                  '%(method)s', {'host': host,
+                                 'method': method})
+        cctxt = self.client.prepare(server=host)
+        cctxt.cast(context, method, **kwargs)
+
     def _notification(self, context, method, routers):
         """Notify all the agents that are hosting the routers."""
-        plugin = directory.get_plugin(constants.L3)
+        plugin = directory.get_plugin(plugin_constants.L3)
         if utils.is_extension_supported(
             plugin, constants.L3_AGENT_SCHEDULER_EXT_ALIAS):
             self._agent_notification(context, method, routers)
@@ -100,3 +109,8 @@ class MeteringAgentNotifyAPI(object):
 
     def remove_metering_label(self, context, routers):
         self._notification(context, 'remove_metering_label', routers)
+
+    def routers_updated_on_host(self, context, router_ids, host):
+        """Notify router updates to specific hosts hosting DVR routers."""
+        self._notification_host(context, 'routers_updated', host,
+                                routers=router_ids)

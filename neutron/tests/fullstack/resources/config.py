@@ -70,7 +70,7 @@ class NeutronConfigFixture(ConfigFixture):
                 'service_plugins': env_desc.service_plugins,
                 'auth_strategy': 'noauth',
                 'debug': 'True',
-                'agent_down_time': env_desc.agent_down_time,
+                'agent_down_time': str(env_desc.agent_down_time),
                 'transport_url':
                     'rabbit://%(user)s:%(password)s@%(host)s:5672/%(vhost)s' %
                     {'user': rabbitmq_environment.user,
@@ -88,9 +88,19 @@ class NeutronConfigFixture(ConfigFixture):
                 'policy_file': self._generate_policy_json(),
             },
             'agent': {
-                'report_interval': env_desc.agent_down_time / 2.0
+                'report_interval': str(env_desc.agent_down_time / 2.0)
             },
         })
+        # Set root_helper/root_helper_daemon only when env var is set
+        root_helper = os.environ.get('OS_ROOTWRAP_CMD')
+        if root_helper:
+            self.config['agent']['root_helper'] = root_helper
+        root_helper_daemon = os.environ.get('OS_ROOTWRAP_DAEMON_CMD')
+        if root_helper_daemon:
+            self.config['agent']['root_helper_daemon'] = root_helper_daemon
+        if env_desc.router_scheduler:
+            self.config['DEFAULT']['router_scheduler_driver'] = (
+                env_desc.router_scheduler)
 
     def _setUp(self):
         self.config['DEFAULT'].update({
@@ -159,7 +169,6 @@ class OVSConfigFixture(ConfigFixture):
                 'local_ip': local_ip,
                 'integration_bridge': self._generate_integration_bridge(),
                 'of_interface': host_desc.of_interface,
-                'ovsdb_interface': host_desc.ovsdb_interface,
             },
             'securitygroup': {
                 'firewall_driver': host_desc.firewall_driver,
@@ -273,10 +282,17 @@ class L3ConfigFixture(ConfigFixture):
             self._prepare_config_with_ovs_agent(integration_bridge)
         elif host_desc.l2_agent_type == constants.AGENT_TYPE_LINUXBRIDGE:
             self._prepare_config_with_linuxbridge_agent()
+        if host_desc.l3_agent_mode:
+            self.config['DEFAULT'].update({
+                'agent_mode': host_desc.l3_agent_mode})
         self.config['DEFAULT'].update({
             'debug': 'True',
             'test_namespace_suffix': self._generate_namespace_suffix(),
         })
+        if host_desc.availability_zone:
+            self.config['agent'].update({
+                'availability_zone': host_desc.availability_zone
+            })
 
     def _prepare_config_with_ovs_agent(self, integration_bridge):
         self.config.update({
@@ -318,6 +334,10 @@ class DhcpConfigFixture(ConfigFixture):
             'dhcp_confs': self._generate_dhcp_path(),
             'test_namespace_suffix': self._generate_namespace_suffix()
         })
+        if host_desc.availability_zone:
+            self.config['agent'].update({
+                'availability_zone': host_desc.availability_zone
+            })
 
     def _setUp(self):
         super(DhcpConfigFixture, self)._setUp()

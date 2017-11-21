@@ -22,13 +22,12 @@ methods that needs to be implemented by a v2 Neutron Plug-in.
 
 import abc
 
+from neutron_lib.services import base as base_services
 import six
-
-from neutron import worker as neutron_worker
 
 
 @six.add_metaclass(abc.ABCMeta)
-class NeutronPluginBaseV2(neutron_worker.WorkerSupportServiceMixin):
+class NeutronPluginBaseV2(base_services.WorkerBase):
 
     @abc.abstractmethod
     def create_subnet(self, context, subnet):
@@ -411,3 +410,10 @@ class NeutronPluginBaseV2(neutron_worker.WorkerSupportServiceMixin):
         """
         return (self.__class__.start_rpc_state_reports_listener !=
                 NeutronPluginBaseV2.start_rpc_state_reports_listener)
+
+    def has_native_datastore(self):
+        """Return True if the plugin uses Neutron's native datastore.
+
+        .. note:: plugins like ML2 should override this method and return True.
+        """
+        return False

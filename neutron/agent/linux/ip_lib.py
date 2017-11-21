@@ -25,9 +25,10 @@ from neutron_lib import exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import excutils
+from pyroute2 import netns
 import six
 
-from neutron._i18n import _, _LE, _LW
+from neutron._i18n import _
 from neutron.agent.common import utils
 from neutron.common import exceptions as n_exc
 from neutron.common import utils as common_utils
@@ -35,11 +36,6 @@ from neutron.privileged.agent.linux import ip_lib as privileged
 
 LOG = logging.getLogger(__name__)
 
-OPTS = [
-    cfg.BoolOpt('ip_lib_force_root',
-                default=False,
-                help=_('Force ip_lib calls to use the root helper')),
-]
 
 IP_NONLOCAL_BIND = 'net.ipv4.ip_nonlocal_bind'
 
@@ -86,27 +82,23 @@ class SubProcessBase(object):
         elif self.force_root:
             # Force use of the root helper to ensure that commands
             # will execute in dom0 when running under XenServer/XCP.
-            return self._execute(options, command, args, run_as_root=True,
-                                 log_fail_as_error=self.log_fail_as_error)
+            return self._execute(options, command, args, run_as_root=True)
         else:
-            return self._execute(options, command, args,
-                                 log_fail_as_error=self.log_fail_as_error)
+            return self._execute(options, command, args)
 
     def _as_root(self, options, command, args, use_root_namespace=False):
         namespace = self.namespace if not use_root_namespace else None
 
         return self._execute(options, command, args, run_as_root=True,
-                             namespace=namespace,
-                             log_fail_as_error=self.log_fail_as_error)
+                             namespace=namespace)
 
-    @classmethod
-    def _execute(cls, options, command, args, run_as_root=False,
-                 namespace=None, log_fail_as_error=True):
+    def _execute(self, options, command, args, run_as_root=False,
+                 namespace=None):
         opt_list = ['-%s' % o for o in options]
         ip_cmd = add_namespace_to_cmd(['ip'], namespace)
         cmd = ip_cmd + opt_list + [command] + list(args)
         return utils.execute(cmd, run_as_root=run_as_root,
-                             log_fail_as_error=log_fail_as_error)
+                             log_fail_as_error=self.log_fail_as_error)
 
     def set_log_fail_as_error(self, fail_with_error):
         self.log_fail_as_error = fail_with_error
@@ -237,7 +229,7 @@ class IPWrapper(SubProcessBase):
         return IPDevice(name, namespace=self.namespace)
 
     def add_vxlan(self, name, vni, group=None, dev=None, ttl=None, tos=None,
-                  local=None, port=None, proxy=False):
+                  local=None, srcport=None, dstport=None, proxy=False):
         cmd = ['add', name, 'type', 'vxlan', 'id', vni]
         if group:
             cmd.extend(['group', group])
@@ -252,19 +244,23 @@ class IPWrapper(SubProcessBase):
         if proxy:
             cmd.append('proxy')
         # tuple: min,max
-        if port and len(port) == 2:
-            cmd.extend(['port', port[0], port[1]])
-        elif port:
-            raise n_exc.NetworkVxlanPortRangeError(vxlan_range=port)
+        if srcport:
+            if len(srcport) == 2 and srcport[0] <= srcport[1]:
+                cmd.extend(['srcport', str(srcport[0]), str(srcport[1])])
+            else:
+                raise n_exc.NetworkVxlanPortRangeError(vxlan_range=srcport)
+        if dstport:
+            cmd.extend(['dstport', str(dstport)])
         self._as_root([], 'link', cmd)
         return (IPDevice(name, namespace=self.namespace))
 
+    @removals.remove(version='Queens', removal_version='Rocky',
+                     message="This will be removed in the future. Please use "
+                             "'neutron.agent.linux.ip_lib."
+                             "list_network_namespaces' instead.")
     @classmethod
     def get_namespaces(cls):
-        output = cls._execute(
-            [], 'netns', ('list',),
-            run_as_root=cfg.CONF.AGENT.use_helper_for_ns_read)
-        return [l.split()[0] for l in output.splitlines()]
+        return list_network_namespaces()
 
 
 class IPDevice(SubProcessBase):
@@ -323,8 +319,8 @@ class IPDevice(SubProcessBase):
                                      extra_ok_codes=[1])
 
         except RuntimeError:
-            LOG.exception(_LE("Failed deleting ingress connection state of"
-                              " floatingip %s"), ip_str)
+            LOG.exception("Failed deleting ingress connection state of"
+                          " floatingip %s", ip_str)
 
         # Delete conntrack state for egress traffic
         try:
@@ -332,8 +328,8 @@ class IPDevice(SubProcessBase):
                                      check_exit_code=True,
                                      extra_ok_codes=[1])
         except RuntimeError:
-            LOG.exception(_LE("Failed deleting egress connection state of"
-                              " floatingip %s"), ip_str)
+            LOG.exception("Failed deleting egress connection state of"
+                          " floatingip %s", ip_str)
 
     def disable_ipv6(self):
         sysctl_name = re.sub(r'\.', '/', self.name)
@@ -471,8 +467,11 @@ class IpRuleCommand(IpCommandBase):
         ip_version = common_utils.get_ip_version(ip)
 
         # In case if we need to add in a rule based on incoming
-        # interface we don't need to pass in the ip.
-        if not kwargs.get('iif'):
+        # interface, pass the "any" IP address, for example, 0.0.0.0/0,
+        # else pass the given IP.
+        if kwargs.get('iif'):
+            kwargs.update({'from': constants.IP_ANY[ip_version]})
+        else:
             kwargs.update({'from': ip})
         canonical_kwargs = self._make_canonical(ip_version, kwargs)
 
@@ -846,15 +845,6 @@ class IpNeighCommand(IpDeviceCommandBase):
                                   self._parent.namespace,
                                   **kwargs)
 
-    @removals.remove(
-        version='Ocata', removal_version='Pike',
-        message="Use 'dump' in IpNeighCommand() class instead")
-    def show(self, ip_version):
-        options = [ip_version]
-        return self._as_root(options,
-                             ('show',
-                              'dev', self.name))
-
     def flush(self, ip_version, ip_address):
         """Flush neighbour entries
 
@@ -872,14 +862,14 @@ class IpNetnsCommand(IpCommandBase):
     COMMAND = 'netns'
 
     def add(self, name):
-        self._as_root([], ('add', name), use_root_namespace=True)
+        create_network_namespace(name)
         wrapper = IPWrapper(namespace=name)
         wrapper.netns.execute(['sysctl', '-w',
                                'net.ipv4.conf.all.promote_secondaries=1'])
         return wrapper
 
     def delete(self, name):
-        self._as_root([], ('delete', name), use_root_namespace=True)
+        delete_network_namespace(name)
 
     def execute(self, cmds, addl_env=None, check_exit_code=True,
                 log_fail_as_error=True, extra_ok_codes=None,
@@ -900,13 +890,7 @@ class IpNetnsCommand(IpCommandBase):
                              log_fail_as_error=log_fail_as_error, **kwargs)
 
     def exists(self, name):
-        output = self._parent._execute(
-            ['o'], 'netns', ['list'],
-            run_as_root=cfg.CONF.AGENT.use_helper_for_ns_read)
-        for line in [l.split()[0] for l in output.splitlines()]:
-            if name == line:
-                return True
-        return False
+        return network_namespace_exists(name)
 
 
 def vlan_in_use(segmentation_id, namespace=None):
@@ -936,7 +920,7 @@ def device_exists_with_ips_and_mac(device_name, ip_cidrs, mac, namespace=None):
     """
     try:
         device = IPDevice(device_name, namespace=namespace)
-        if mac != device.link.address:
+        if mac and mac != device.link.address:
             return False
         device_ip_cidrs = [ip['cidr'] for ip in device.addr.list()]
         for ip_cidr in ip_cidrs:
@@ -1027,6 +1011,45 @@ def dump_neigh_entries(ip_version, device=None, namespace=None, **kwargs):
                                               **kwargs))
 
 
+def create_network_namespace(namespace, **kwargs):
+    """Create a network namespace.
+
+    :param namespace: The name of the namespace to create
+    :param kwargs: Callers add any filters they use as kwargs
+    """
+    privileged.create_netns(namespace, **kwargs)
+
+
+def delete_network_namespace(namespace, **kwargs):
+    """Delete a network namespace.
+
+    :param namespace: The name of the namespace to delete
+    :param kwargs: Callers add any filters they use as kwargs
+    """
+    privileged.remove_netns(namespace, **kwargs)
+
+
+def list_network_namespaces(**kwargs):
+    """List all network namespace entries.
+
+    :param kwargs: Callers add any filters they use as kwargs
+    """
+    if cfg.CONF.AGENT.use_helper_for_ns_read:
+        return privileged.list_netns(**kwargs)
+    else:
+        return netns.listnetns(**kwargs)
+
+
+def network_namespace_exists(namespace, **kwargs):
+    """Check if a network namespace exists.
+
+    :param namespace: The name of the namespace to check
+    :param kwargs: Callers add any filters they use as kwargs
+    """
+    output = list_network_namespaces(**kwargs)
+    return namespace in output
+
+
 def ensure_device_is_ready(device_name, namespace=None):
     dev = IPDevice(device_name, namespace=namespace)
     dev.set_log_fail_as_error(False)
@@ -1056,10 +1079,21 @@ def _arping(ns_name, iface_name, address, count, log_exception):
     # *  https://patchwork.ozlabs.org/patch/760372/
     # ** https://github.com/iputils/iputils/pull/86
     first = True
+    # Since arping is used to send gratuitous ARP, a response is
+    # not expected. In some cases (no response) and with some
+    # platforms (>=Ubuntu 14.04), arping exit code can be 1.
+    extra_ok_codes = [1]
+    ip_wrapper = IPWrapper(namespace=ns_name)
     for i in range(count):
         if not first:
             # hopefully enough for kernel to get out of locktime loop
             time.sleep(2)
+            # On the second (and subsequent) arping calls, we can get a
+            # "bind: Cannot assign requested address" error since
+            # the IP address might have been deleted concurrently.
+            # We will log an error below if this isn't the case, so
+            # no need to have execute() log one as well.
+            extra_ok_codes = [1, 2]
         first = False
 
         # some Linux kernels* don't honour REPLYs. Send both gratuitous REQUEST
@@ -1074,21 +1108,33 @@ def _arping(ns_name, iface_name, address, count, log_exception):
                           # removed while running
                           '-w', 1.5, address]
             try:
-                ip_wrapper = IPWrapper(namespace=ns_name)
-                # Since arping is used to send gratuitous ARP, a response is
-                # not expected. In some cases (no response) and with some
-                # platforms (>=Ubuntu 14.04), arping exit code can be 1.
-                ip_wrapper.netns.execute(arping_cmd, extra_ok_codes=[1])
+                ip_wrapper.netns.execute(arping_cmd,
+                                         extra_ok_codes=extra_ok_codes)
             except Exception as exc:
+                # Since this is spawned in a thread and executed 2 seconds
+                # apart, something may have been deleted while we were
+                # sleeping. Downgrade message to info and return early
+                # unless it was the first try.
+                exists = device_exists_with_ips_and_mac(iface_name,
+                                                        [address],
+                                                        mac=None,
+                                                        namespace=ns_name)
                 msg = _("Failed sending gratuitous ARP to %(addr)s on "
                         "%(iface)s in namespace %(ns)s: %(err)s")
                 logger_method = LOG.exception
-                if not log_exception:
-                    logger_method = LOG.warning
+                if not (log_exception and (first or exists)):
+                    logger_method = LOG.info
                 logger_method(msg, {'addr': address,
                                     'iface': iface_name,
                                     'ns': ns_name,
                                     'err': exc})
+                if not exists:
+                    LOG.info("Interface %(iface)s or address %(addr)s "
+                             "in namespace %(ns)s was deleted concurrently",
+                             {'iface': iface_name,
+                              'addr': address,
+                              'ns': ns_name})
+                    return
 
 
 def send_ip_addr_adv_notif(
@@ -1146,7 +1192,7 @@ def sysctl(cmd, namespace=None, log_fail_as_error=True):
                                  log_fail_as_error=log_fail_as_error)
     except RuntimeError as rte:
         LOG.warning(
-            _LW("Setting %(cmd)s in namespace %(ns)s failed: %(err)s."),
+            "Setting %(cmd)s in namespace %(ns)s failed: %(err)s.",
             {'cmd': cmd,
              'ns': namespace,
              'err': rte})
@@ -1159,14 +1205,6 @@ def add_namespace_to_cmd(cmd, namespace=None):
     """Add an optional namespace to the command."""
 
     return ['ip', 'netns', 'exec', namespace] + cmd if namespace else cmd
-
-
-@removals.remove(
-    message="This will be removed in the future. "
-            "Please use 'neutron.common.utils.get_ip_version' instead.",
-    version='Pike', removal_version='Queens')
-def get_ip_version(ip_or_cidr):
-    return common_utils.get_ip_version(ip_or_cidr)
 
 
 def get_ipv6_lladdr(mac_addr):
@@ -1193,9 +1231,9 @@ def set_ip_nonlocal_bind_for_namespace(namespace):
                                   log_fail_as_error=False)
     if failed:
         LOG.warning(
-            _LW("%s will not be set to 0 in the root namespace in order to "
-                "not break DVR, which requires this value be set to 1. This "
-                "may introduce a race between moving a floating IP to a "
-                "different network node, and the peer side getting a "
-                "populated ARP cache for a given floating IP address."),
+            "%s will not be set to 0 in the root namespace in order to "
+            "not break DVR, which requires this value be set to 1. This "
+            "may introduce a race between moving a floating IP to a "
+            "different network node, and the peer side getting a "
+            "populated ARP cache for a given floating IP address.",
             IP_NONLOCAL_BIND)

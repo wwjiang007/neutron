@@ -16,9 +16,9 @@
 import os
 
 import mock
-from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions as n_exc
+from neutron_lib.plugins import constants
 from oslo_config import cfg
 from oslo_middleware import base
 from oslo_service import wsgi
@@ -85,7 +85,6 @@ class PecanFunctionalTest(testlib_api.SqlTestCase):
         self.app = create_test_app()
 
     def set_config_overrides(self):
-        cfg.CONF.set_override('web_framework', 'pecan')
         cfg.CONF.set_override('auth_strategy', 'noauth')
 
     def do_request(self, url, tenant_id=None, admin=False,

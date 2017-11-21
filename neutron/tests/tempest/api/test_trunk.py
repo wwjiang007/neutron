@@ -12,11 +12,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from tempest.common import utils
 from tempest.lib.common.utils import data_utils
 from tempest.lib.common.utils import test_utils
 from tempest.lib import decorators
 from tempest.lib import exceptions as lib_exc
-from tempest import test
 
 from neutron.tests.tempest.api import base
 from neutron.tests.tempest import config
@@ -38,18 +38,11 @@ def trunks_cleanup(client, trunks):
 
 class TrunkTestJSONBase(base.BaseAdminNetworkTest):
 
-    extension = 'trunk'
+    required_extensions = ['trunk']
 
     def setUp(self):
         self.addCleanup(self.resource_cleanup)
         super(TrunkTestJSONBase, self).setUp()
-
-    @classmethod
-    def skip_checks(cls):
-        super(TrunkTestJSONBase, cls).skip_checks()
-        if not test.is_extension_enabled(cls.extension, 'network'):
-            msg = "%s extension not enabled." % cls.extension
-            raise cls.skipException(msg)
 
     @classmethod
     def resource_setup(cls):
@@ -102,7 +95,7 @@ class TrunkTestJSON(TrunkTestJSONBase):
         self.assertRaises(lib_exc.NotFound, self._show_trunk, trunk_id)
 
     @decorators.idempotent_id('8d83a6ca-662d-45b8-8062-d513077296aa')
-    @test.requires_ext(extension="project-id", service="network")
+    @utils.requires_ext(extension="project-id", service="network")
     def test_show_trunk_has_project_id(self):
         trunk = self._create_trunk_with_network_and_parent(None)
         body = self._show_trunk(trunk['trunk']['id'])
@@ -115,18 +108,18 @@ class TrunkTestJSON(TrunkTestJSONBase):
     @decorators.idempotent_id('4ce46c22-a2b6-4659-bc5a-0ef2463cab32')
     def test_create_update_trunk(self):
         trunk = self._create_trunk_with_network_and_parent(None)
-        self.assertEqual(1, trunk['trunk']['revision_number'])
+        rev = trunk['trunk']['revision_number']
         trunk_id = trunk['trunk']['id']
         res = self._show_trunk(trunk_id)
         self.assertTrue(res['trunk']['admin_state_up'])
-        self.assertEqual(1, res['trunk']['revision_number'])
+        self.assertEqual(rev, res['trunk']['revision_number'])
         self.assertEqual("", res['trunk']['name'])
         self.assertEqual("", res['trunk']['description'])
         res = self.client.update_trunk(
             trunk_id, name='foo', admin_state_up=False)
         self.assertFalse(res['trunk']['admin_state_up'])
         self.assertEqual("foo", res['trunk']['name'])
-        self.assertGreater(res['trunk']['revision_number'], 1)
+        self.assertGreater(res['trunk']['revision_number'], rev)
         # enable the trunk so that it can be managed
         self.client.update_trunk(trunk_id, admin_state_up=True)
 
@@ -227,10 +220,6 @@ class TrunkTestInheritJSONBase(TrunkTestJSONBase):
     @classmethod
     def skip_checks(cls):
         super(TrunkTestInheritJSONBase, cls).skip_checks()
-        for ext in cls.required_extensions:
-            if not test.is_extension_enabled(ext, 'network'):
-                msg = "%s extension not enabled." % ext
-                raise cls.skipException(msg)
         if ("vlan" not in
                 config.CONF.neutron_plugin_options.available_type_drivers):
             raise cls.skipException("VLAN type_driver is not enabled")
@@ -239,7 +228,7 @@ class TrunkTestInheritJSONBase(TrunkTestJSONBase):
 
     def create_provider_network(self):
         foo_net = config.CONF.neutron_plugin_options.provider_vlans[0]
-        post_body = {'network_name': data_utils.rand_name('vlan-net-'),
+        post_body = {'network_name': data_utils.rand_name('vlan-net'),
                      'provider:network_type': 'vlan',
                      'provider:physical_network': foo_net}
         return self.create_shared_network(**post_body)
@@ -277,11 +266,6 @@ class TrunkTestMtusJSONBase(TrunkTestJSONBase):
     @classmethod
     def skip_checks(cls):
         super(TrunkTestMtusJSONBase, cls).skip_checks()
-        for ext in cls.required_extensions:
-            if not test.is_extension_enabled(ext, 'network'):
-                msg = "%s extension not enabled." % ext
-                raise cls.skipException(msg)
-
         if any(t
                not in config.CONF.neutron_plugin_options.available_type_drivers
                for t in ['gre', 'vxlan']):
@@ -292,11 +276,11 @@ class TrunkTestMtusJSONBase(TrunkTestJSONBase):
         super(TrunkTestMtusJSONBase, self).setUp()
 
         # VXLAN autocomputed MTU (1450) is smaller than that of GRE (1458)
-        vxlan_kwargs = {'network_name': data_utils.rand_name('vxlan-net-'),
+        vxlan_kwargs = {'network_name': data_utils.rand_name('vxlan-net'),
                         'provider:network_type': 'vxlan'}
         self.smaller_mtu_net = self.create_shared_network(**vxlan_kwargs)
 
-        gre_kwargs = {'network_name': data_utils.rand_name('gre-net-'),
+        gre_kwargs = {'network_name': data_utils.rand_name('gre-net'),
                       'provider:network_type': 'gre'}
         self.larger_mtu_net = self.create_shared_network(**gre_kwargs)
 
@@ -351,14 +335,8 @@ class TrunkTestMtusJSON(TrunkTestMtusJSONBase):
 
 class TrunksSearchCriteriaTest(base.BaseSearchCriteriaTest):
 
+    required_extensions = ['trunk']
     resource = 'trunk'
-
-    @classmethod
-    def skip_checks(cls):
-        super(TrunksSearchCriteriaTest, cls).skip_checks()
-        if not test.is_extension_enabled('trunk', 'network'):
-            msg = "trunk extension not enabled."
-            raise cls.skipException(msg)
 
     @classmethod
     def resource_setup(cls):

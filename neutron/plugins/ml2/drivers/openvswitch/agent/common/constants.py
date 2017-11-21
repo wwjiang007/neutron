@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from neutron.plugins.common import constants as p_const
+from neutron_lib import constants as p_const
 
 
 # Special vlan_id value in ovs_vlan_allocations table indicating flat network
@@ -52,6 +52,9 @@ ARP_SPOOF_TABLE = 24
 
 # Table for MAC spoof filtering
 MAC_SPOOF_TABLE = 25
+
+# Table to decide whether further filtering is needed
+TRANSIENT_TABLE = 60
 
 # Tables used for ovs firewall
 BASE_EGRESS_TABLE = 71

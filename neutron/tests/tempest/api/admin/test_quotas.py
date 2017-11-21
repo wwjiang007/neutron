@@ -13,10 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest.lib.common.utils import data_utils
+import six
+from tempest.common import utils
 from tempest.lib import decorators
 from tempest.lib import exceptions as lib_exc
-from tempest import test
 
 from neutron.tests.tempest.api import base
 from neutron.tests.tempest import config
@@ -26,24 +26,11 @@ CONF = config.CONF
 
 class QuotasTestBase(base.BaseAdminNetworkTest):
 
-    @classmethod
-    @test.requires_ext(extension="quotas", service="network")
-    def resource_setup(cls):
-        if not CONF.identity_feature_enabled.api_v2_admin:
-            # TODO(ihrachys) adopt to v3
-            raise cls.skipException('Identity v2 admin not available')
-        super(QuotasTestBase, cls).resource_setup()
+    required_extensions = ['quotas']
 
-    def _create_tenant(self):
-        # Add a tenant to conduct the test
-        test_tenant = data_utils.rand_name('test_tenant_')
-        test_description = data_utils.rand_name('desc_')
-        tenant = self.identity_admin_client.create_tenant(
-            name=test_tenant,
-            description=test_description)['tenant']
-        self.addCleanup(
-            self.identity_admin_client.delete_tenant, tenant['id'])
-        return tenant
+    @classmethod
+    def resource_setup(cls):
+        super(QuotasTestBase, cls).resource_setup()
 
     def _setup_quotas(self, project_id, **new_quotas):
         # Change quotas for tenant
@@ -61,6 +48,19 @@ class QuotasTestBase(base.BaseAdminNetworkTest):
         except lib_exc.NotFound:
             pass
 
+    def _create_network(self, project_id):
+        network = self.create_network(client=self.admin_client,
+                                      tenant_id=project_id)
+        self.addCleanup(self.admin_client.delete_network,
+                        network['id'])
+        return network
+
+    def _create_port(self, **kwargs):
+        port = self.admin_client.create_port(**kwargs)['port']
+        self.addCleanup(self.admin_client.delete_port,
+                        port['id'])
+        return port
+
 
 class QuotasTest(QuotasTestBase):
     """Test the Neutron API of Quotas.
@@ -70,6 +70,7 @@ class QuotasTest(QuotasTestBase):
 
         list quotas for tenants who have non-default quota values
         show quotas for a specified tenant
+        show detail quotas for a specified tenant
         update quotas for a specified tenant
         reset quotas to default values for a specified tenant
 
@@ -80,10 +81,10 @@ class QuotasTest(QuotasTestBase):
         quota_driver = neutron.db.driver.DbQuotaDriver
     """
 
-    @test.attr(type='gate')
+    @decorators.attr(type='gate')
     @decorators.idempotent_id('2390f766-836d-40ef-9aeb-e810d78207fb')
     def test_quotas(self):
-        tenant_id = self._create_tenant()['id']
+        tenant_id = self.create_project()['id']
         new_quotas = {'network': 0, 'security_group': 0}
 
         # Change quotas for tenant
@@ -111,3 +112,39 @@ class QuotasTest(QuotasTestBase):
         non_default_quotas = self.admin_client.list_quotas()
         for q in non_default_quotas['quotas']:
             self.assertNotEqual(tenant_id, q['tenant_id'])
+
+    @decorators.idempotent_id('e974b5ba-090a-452c-a578-f9710151d9fc')
+    @decorators.attr(type='gate')
+    @utils.requires_ext(extension="quota_details", service="network")
+    def test_detail_quotas(self):
+        tenant_id = self.create_project()['id']
+        new_quotas = {'network': {'used': 1, 'limit': 2, 'reserved': 0},
+                      'port': {'used': 1, 'limit': 2, 'reserved': 0}}
+
+        # update quota limit for tenant
+        new_quota = {'network': new_quotas['network']['limit'], 'port':
+                     new_quotas['port']['limit']}
+        quota_set = self._setup_quotas(tenant_id, **new_quota)
+
+        # create test resources
+        network = self._create_network(tenant_id)
+        post_body = {"network_id": network['id'],
+                     "tenant_id": tenant_id}
+        self._create_port(**post_body)
+
+        # confirm from extended API quotas were changed
+        # as requested for tenant
+        quota_set = self.admin_client.show_details_quota(tenant_id)
+        quota_set = quota_set['quota']
+        for key, value in six.iteritems(new_quotas):
+            self.assertEqual(new_quotas[key]['limit'],
+                             quota_set[key]['limit'])
+            self.assertEqual(new_quotas[key]['reserved'],
+                             quota_set[key]['reserved'])
+            self.assertEqual(new_quotas[key]['used'],
+                             quota_set[key]['used'])
+
+        # validate 'default' action for old extension
+        quota_limit = self.admin_client.show_quotas(tenant_id)['quota']
+        for key, value in six.iteritems(new_quotas):
+            self.assertEqual(new_quotas[key]['limit'], quota_limit[key])

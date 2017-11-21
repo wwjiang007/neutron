@@ -13,12 +13,12 @@
 #    under the License.
 
 import datetime
-import six
 
 import mock
 from neutron_lib import context
 from neutron_lib.plugins import directory
 from oslo_utils import timeutils
+import six
 
 from neutron.db import db_base_plugin_v2
 from neutron.db import models_v2
@@ -239,9 +239,6 @@ class TimeStampChangedsinceTestCase(test_db_base_plugin_v2.
 
 class TimeStampDBMixinTestCase(TimeStampChangedsinceTestCase):
     """Test timestamp_db.TimeStamp_db_mixin()"""
-
-    def setUp(self):
-        super(TimeStampDBMixinTestCase, self).setUp()
 
     def _save_network(self, network_id):
         ctx = context.get_admin_context()

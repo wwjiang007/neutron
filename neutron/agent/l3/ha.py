@@ -20,7 +20,6 @@ from oslo_log import log as logging
 from oslo_utils import fileutils
 import webob
 
-from neutron._i18n import _LI
 from neutron.agent.linux import utils as agent_utils
 from neutron.common import constants
 from neutron.notifiers import batch_notifier
@@ -78,6 +77,8 @@ class AgentMixin(object):
     def __init__(self, host):
         self._init_ha_conf_path()
         super(AgentMixin, self).__init__(host)
+        # BatchNotifier queue is needed to ensure that the HA router
+        # state change sequence is under the proper order.
         self.state_change_notifier = batch_notifier.BatchNotifier(
             self._calculate_batch_duration(), self.notify_server)
         eventlet.spawn(self._start_keepalived_notifications_server)
@@ -86,8 +87,8 @@ class AgentMixin(object):
         try:
             return self.router_info[router_id]
         except KeyError:
-            LOG.info(_LI('Router %s is not managed by this agent. It was '
-                         'possibly deleted concurrently.'), router_id)
+            LOG.info('Router %s is not managed by this agent. It was '
+                     'possibly deleted concurrently.', router_id)
 
     def check_ha_state_for_router(self, router_id, current_state):
         ri = self._get_router_info(router_id)
@@ -103,19 +104,14 @@ class AgentMixin(object):
         state_change_server.run()
 
     def _calculate_batch_duration(self):
-        # Slave becomes the master after not hearing from it 3 times
-        detection_time = self.conf.ha_vrrp_advert_int * 3
-
-        # Keepalived takes a couple of seconds to configure the VIPs
-        configuration_time = 2
-
-        # Give it enough slack to batch all events due to the same failure
-        return (detection_time + configuration_time) * 2
+        # Set the BatchNotifier interval to ha_vrrp_advert_int,
+        # default 2 seconds.
+        return self.conf.ha_vrrp_advert_int
 
     def enqueue_state_change(self, router_id, state):
-        LOG.info(_LI('Router %(router_id)s transitioned to %(state)s'),
-                 {'router_id': router_id,
-                  'state': state})
+        state_change_data = {"router_id": router_id, "state": state}
+        LOG.info('Router %(router_id)s transitioned to %(state)s',
+                 state_change_data)
 
         ri = self._get_router_info(router_id)
         if ri is None:
@@ -131,6 +127,7 @@ class AgentMixin(object):
         self._update_radvd_daemon(ri, state)
         self.pd.process_ha_state(router_id, state == 'master')
         self.state_change_notifier.queue_event((router_id, state))
+        self.l3_ext_manager.ha_state_change(self.context, state_change_data)
 
     def _configure_ipv6_params_on_ext_gw_port_if_necessary(self, ri, state):
         # If ipv6 is enabled on the platform, ipv6_gateway config flag is

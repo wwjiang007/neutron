@@ -19,17 +19,17 @@
 from neutron_lib.api import validators
 from neutron_lib import constants
 from neutron_lib.db import model_base
+from neutron_lib.plugins.ml2 import api
 import oslo_db.sqlalchemy.session
 import sqlalchemy as sa
 from sqlalchemy import orm
 
 from neutron.api import extensions
 from neutron.db import models_v2
-from neutron.plugins.ml2 import driver_api
 from neutron.tests.unit.plugins.ml2 import extensions as test_extensions
 
 
-class TestExtensionDriverBase(driver_api.ExtensionDriver):
+class TestExtensionDriverBase(api.ExtensionDriver):
     _supported_extension_aliases = 'fake_extension'
 
     def initialize(self):

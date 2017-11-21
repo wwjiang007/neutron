@@ -20,7 +20,6 @@ import random
 import time
 import warnings
 
-from debtcollector import removals
 import fixtures
 import mock
 import netaddr
@@ -31,39 +30,8 @@ from oslo_utils import netutils
 from oslo_utils import timeutils
 import unittest2
 
-from neutron.api.v2 import attributes
 from neutron.common import constants as n_const
-from neutron.plugins.common import constants as p_const
-
-
-class AttributeMapMemento(fixtures.Fixture):
-    """Create a copy of the resource attribute map so it can be restored during
-    test cleanup.
-
-    There are a few reasons why this is not included in a class derived
-    from BaseTestCase:
-
-        - Test cases may need more control about when the backup is
-        made, especially if they are not direct descendants of
-        BaseTestCase.
-
-        - Inheritance is a bit of overkill for this facility and it's a
-        stretch to rationalize the "is a" criteria.
-    """
-
-    def _setUp(self):
-        # Shallow copy is not a proper choice for keeping a backup copy as
-        # the RESOURCE_ATTRIBUTE_MAP map is modified in place through the
-        # 0th level keys. Ideally deepcopy() would be used but this seems
-        # to result in test failures. A compromise is to copy one level
-        # deeper than a shallow copy.
-        self.contents_backup = {}
-        for res, attrs in attributes.RESOURCE_ATTRIBUTE_MAP.items():
-            self.contents_backup[res] = attrs.copy()
-        self.addCleanup(self.restore)
-
-    def restore(self):
-        attributes.RESOURCE_ATTRIBUTE_MAP = self.contents_backup
+from neutron.services.logapi.common import constants as log_const
 
 
 class WarningsFixture(fixtures.Fixture):
@@ -227,7 +195,7 @@ def get_random_port(start=n_const.PORT_RANGE_MIN):
 
 
 def get_random_vlan():
-    return random.randint(p_const.MIN_VLAN_TAG, p_const.MAX_VLAN_TAG)
+    return random.randint(constants.MIN_VLAN_TAG, constants.MAX_VLAN_TAG)
 
 
 def get_random_ip_version():
@@ -240,16 +208,6 @@ def get_random_cidr(version=4):
                                   random.randint(3, 254),
                                   24)
     return '2001:db8:%x::/%d' % (random.getrandbits(16), 64)
-
-
-@removals.remove(
-    message="Use get_random_mac from neutron_lib.utils.net",
-    version="Pike",
-    removal_version="Queens"
-)
-def get_random_mac():
-    """Generate a random mac address starting with fe:16:3e"""
-    return net.get_random_mac(['fe', '16', '3e', '00', '00', '00'])
 
 
 def get_random_EUI():
@@ -276,8 +234,16 @@ def get_random_ip_address(version=4):
         return ip
 
 
+def get_random_floatingip_status():
+    return random.choice(n_const.VALID_FLOATINGIP_STATUS)
+
+
 def get_random_flow_direction():
-    return random.choice(n_const.VALID_DIRECTIONS)
+    return random.choice(constants.VALID_DIRECTIONS)
+
+
+def get_random_ha_states():
+    return random.choice(n_const.VALID_HA_STATES)
 
 
 def get_random_ether_type():
@@ -319,3 +285,7 @@ def reset_random_seed():
 
 def get_random_ipv6_mode():
     return random.choice(constants.IPV6_MODES)
+
+
+def get_random_security_event():
+    return random.choice(log_const.LOG_EVENTS)

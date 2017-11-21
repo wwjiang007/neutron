@@ -13,10 +13,12 @@
 #    under the License.
 
 import copy
-from keystoneauth1 import exceptions as ks_exc
 
+from keystoneauth1 import exceptions as ks_exc
 import mock
 import netaddr
+from neutron_lib.api.definitions import ip_allocation as ipalloc_apidef
+from neutron_lib.api.definitions import l2_adjacency as l2adj_apidef
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import exceptions
@@ -31,7 +33,6 @@ from oslo_config import cfg
 from oslo_utils import uuidutils
 import webob.exc
 
-from neutron.api.v2 import attributes
 from neutron.common import exceptions as neutron_exc
 from neutron.conf.plugins.ml2.drivers import driver_type
 from neutron.db import agents_db
@@ -39,12 +40,8 @@ from neutron.db import agentschedulers_db
 from neutron.db import db_base_plugin_v2
 from neutron.db import portbindings_db
 from neutron.db import segments_db
-from neutron.extensions import ip_allocation
-from neutron.extensions import l2_adjacency
 from neutron.extensions import segment as ext_segment
 from neutron.objects import network
-from neutron.plugins.common import constants as p_constants
-from neutron.plugins.ml2 import config
 from neutron.services.segments import db
 from neutron.services.segments import exceptions as segment_exc
 from neutron.services.segments import placement_client
@@ -64,12 +61,6 @@ HTTP_NOT_FOUND = 404
 class SegmentTestExtensionManager(object):
 
     def get_resources(self):
-        # Add the resources to the global attribute map
-        # This is done here as the setup process won't
-        # initialize the main API router which extends
-        # the global attribute map
-        attributes.RESOURCE_ATTRIBUTE_MAP.update(
-            ext_segment.RESOURCE_ATTRIBUTE_MAP)
         return ext_segment.Segment.get_resources()
 
     def get_actions(self):
@@ -472,9 +463,9 @@ class HostSegmentMappingTestCase(SegmentTestCase):
     _mechanism_drivers = ['logger']
 
     def setUp(self, plugin=None):
-        config.cfg.CONF.set_override('mechanism_drivers',
-                                     self._mechanism_drivers,
-                                     group='ml2')
+        cfg.CONF.set_override('mechanism_drivers',
+                              self._mechanism_drivers,
+                              group='ml2')
 
         # NOTE(dasm): ml2_type_vlan requires to be registered before used.
         # This piece was refactored and removed from .config, so it causes
@@ -482,9 +473,9 @@ class HostSegmentMappingTestCase(SegmentTestCase):
         # There is no problem when tests are running without debugger.
         driver_type.register_ml2_drivers_vlan_opts()
 
-        config.cfg.CONF.set_override('network_vlan_ranges',
-                                     ['phys_net1', 'phys_net2'],
-                                     group='ml2_type_vlan')
+        cfg.CONF.set_override('network_vlan_ranges',
+                              ['phys_net1', 'phys_net2'],
+                              group='ml2_type_vlan')
         if not plugin:
             plugin = 'ml2'
         super(HostSegmentMappingTestCase, self).setUp(plugin=plugin)
@@ -508,7 +499,7 @@ class HostSegmentMappingTestCase(SegmentTestCase):
             network = network['network']
         segment = self._test_create_segment(
             network_id=network['id'], physical_network=physical_network,
-            segmentation_id=200, network_type=p_constants.TYPE_VLAN)['segment']
+            segmentation_id=200, network_type=constants.TYPE_VLAN)['segment']
         self._register_agent(host, mappings={physical_network: 'br-eth-1'},
                              plugin=self.plugin)
         segments_host_db = self._get_segments_for_host(host)
@@ -534,10 +525,10 @@ class TestMl2HostSegmentMappingNoAgent(HostSegmentMappingTestCase):
             network = network['network']
         segment = self._test_create_segment(
             network_id=network['id'], physical_network='phys_net1',
-            segmentation_id=200, network_type=p_constants.TYPE_VLAN)['segment']
+            segmentation_id=200, network_type=constants.TYPE_VLAN)['segment']
         self._test_create_segment(
             network_id=network['id'], physical_network='phys_net2',
-            segmentation_id=201, network_type=p_constants.TYPE_VLAN)['segment']
+            segmentation_id=201, network_type=constants.TYPE_VLAN)['segment']
         segments = db.get_segments_with_phys_nets(ctx, physnets)
         segment_ids = {segment['id'] for segment in segments}
         db.update_segment_host_mapping(ctx, host, segment_ids)
@@ -554,7 +545,7 @@ class TestMl2HostSegmentMappingNoAgent(HostSegmentMappingTestCase):
             network = network['network']
         segment = self._test_create_segment(
             network_id=network['id'], physical_network='phys_net1',
-            segmentation_id=200, network_type=p_constants.TYPE_VLAN)['segment']
+            segmentation_id=200, network_type=constants.TYPE_VLAN)['segment']
         db.map_segment_to_hosts(ctx, segment['id'], hosts)
         updated_segment = self.plugin.get_segment(ctx, segment['id'])
         self.assertEqual(hosts, set(updated_segment['hosts']))
@@ -568,7 +559,7 @@ class TestMl2HostSegmentMappingNoAgent(HostSegmentMappingTestCase):
             host = "host%s" % i
             segment = self._test_create_segment(
                 network_id=network_id, physical_network='phys_net%s' % i,
-                segmentation_id=200 + i, network_type=p_constants.TYPE_VLAN)
+                segmentation_id=200 + i, network_type=constants.TYPE_VLAN)
             db.update_segment_host_mapping(
                 ctx, host, {segment['segment']['id']})
             hosts.add(host)
@@ -598,7 +589,7 @@ class TestMl2HostSegmentMappingOVS(HostSegmentMappingTestCase):
                 network_id=networks[i]['id'],
                 physical_network=physical_networks[i],
                 segmentation_id=200,
-                network_type=p_constants.TYPE_VLAN)['segment'])
+                network_type=constants.TYPE_VLAN)['segment'])
         self._register_agent(host, mappings={physical_networks[0]: 'br-eth-1',
                                              physical_networks[1]: 'br-eth-2'},
                              plugin=self.plugin)
@@ -639,7 +630,7 @@ class TestMl2HostSegmentMappingOVS(HostSegmentMappingTestCase):
             network_id=network['id'],
             physical_network=physical_network,
             segmentation_id=200,
-            network_type=p_constants.TYPE_VLAN)['segment']
+            network_type=constants.TYPE_VLAN)['segment']
         self._register_agent(host1, mappings={physical_network: 'br-eth-1'},
                              plugin=self.plugin)
         self._register_agent(host2, mappings={physical_network: 'br-eth-1'},
@@ -651,7 +642,7 @@ class TestMl2HostSegmentMappingOVS(HostSegmentMappingTestCase):
             network_id=network['id'],
             physical_network=other_phys_net,
             segmentation_id=201,
-            network_type=p_constants.TYPE_VLAN)['segment']
+            network_type=constants.TYPE_VLAN)['segment']
         self._register_agent(host2, mappings={other_phys_net: 'br-eth-2'},
                              plugin=self.plugin)
         # We should have segment1 map to host1 and segment2 map to host2 now
@@ -674,7 +665,7 @@ class TestMl2HostSegmentMappingOVS(HostSegmentMappingTestCase):
             network = network['network']
         segment2 = self._test_create_segment(
             network_id=network['id'], physical_network=physical_network,
-            segmentation_id=201, network_type=p_constants.TYPE_VLAN)['segment']
+            segmentation_id=201, network_type=constants.TYPE_VLAN)['segment']
         segments_host_db = self._get_segments_for_host(host1)
         self.assertEqual(set((segment['id'], segment2['id'])),
                          set(segments_host_db))
@@ -694,7 +685,7 @@ class TestMl2HostSegmentMappingOVS(HostSegmentMappingTestCase):
             network = network['network']
         self._test_create_segment(
             network_id=network['id'], physical_network=physical_network,
-            segmentation_id=200, network_type=p_constants.TYPE_VLAN)
+            segmentation_id=200, network_type=constants.TYPE_VLAN)
         self._register_agent(host, plugin=self.plugin)
         segments_host_db = self._get_segments_for_host(host)
         self.assertFalse(segments_host_db)
@@ -754,7 +745,7 @@ class TestHostSegmentMappingNoSupportFromPlugin(HostSegmentMappingTestCase):
         self._test_create_segment(network_id=network['id'],
                                   physical_network=physical_network,
                                   segmentation_id=200,
-                                  network_type=p_constants.TYPE_VLAN)
+                                  network_type=constants.TYPE_VLAN)
         self._register_agent(host, mappings={physical_network: 'br-eth-1'},
                              plugin=self.plugin)
         segments_host_db = self._get_segments_for_host(host)
@@ -832,7 +823,7 @@ class SegmentAwareIpamTestCase(SegmentTestCase):
         segment = self._test_create_segment(
             network_id=network['network']['id'],
             physical_network=physnet,
-            network_type=p_constants.TYPE_VLAN)
+            network_type=constants.TYPE_VLAN)
         return network, segment
 
     def _create_test_subnet_with_segment(self, network, segment,
@@ -852,7 +843,7 @@ class SegmentAwareIpamTestCase(SegmentTestCase):
         request = self.new_show_request('networks', network_id)
         response = self.deserialize(self.fmt, request.get_response(self.api))
         self.assertEqual(is_adjacent,
-                         response['network'][l2_adjacency.L2_ADJACENCY])
+                         response['network'][l2adj_apidef.L2_ADJACENCY])
 
 
 class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
@@ -879,6 +870,19 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         res = self.deserialize(self.fmt, response)
         # Don't allocate IPs in this case because we didn't give binding info
         self.assertEqual(0, len(res['port']['fixed_ips']))
+
+    def test_port_create_fixed_ips_with_segment_subnets_no_binding_info(self):
+        """Fixed IP provided and no binding info, do not defer IP allocation"""
+        network, segment, subnet = self._create_test_segment_with_subnet()
+        response = self._create_port(self.fmt,
+                                     net_id=network['network']['id'],
+                                     tenant_id=network['network']['tenant_id'],
+                                     fixed_ips=[
+                                         {'subnet_id': subnet['subnet']['id']}
+                                     ])
+        res = self.deserialize(self.fmt, response)
+        # We gave fixed_ips, allocate IPs in this case despite no binding info
+        self._validate_immediate_ip_allocation(res['port']['id'])
 
     def _assert_one_ip_in_subnet(self, response, cidr):
         res = self.deserialize(self.fmt, response)
@@ -914,7 +918,7 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
             segment = self._test_create_segment(
                 network_id=network['network']['id'],
                 physical_network='physnet',
-                network_type=p_constants.TYPE_VLAN)
+                network_type=constants.TYPE_VLAN)
 
         # Map the host to the segment
         self._setup_host_mappings([(segment['segment']['id'], 'fakehost')])
@@ -938,7 +942,7 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
                 segment = self._test_create_segment(
                     network_id=network['network']['id'],
                     physical_network='physnet',
-                    network_type=p_constants.TYPE_VLAN)
+                    network_type=constants.TYPE_VLAN)
 
         self._validate_l2_adjacency(network['network']['id'], is_adjacent=True)
 
@@ -1009,7 +1013,7 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
             segment = self._test_create_segment(
                 network_id=network['network']['id'],
                 physical_network='physnet',
-                network_type=p_constants.TYPE_VLAN)
+                network_type=constants.TYPE_VLAN)
 
         # Create a port with no IP address (since there is no subnet)
         port = self._create_deferred_ip_port(network)
@@ -1043,7 +1047,7 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
             segment = self._test_create_segment(
                 network_id=network['network']['id'],
                 physical_network='physnet',
-                network_type=p_constants.TYPE_VLAN)
+                network_type=constants.TYPE_VLAN)
             with self.subnet(network=network,
                              segment_id=segment['segment']['id']):
                 pass
@@ -1051,8 +1055,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         # Create an unbound port requesting no IP addresses
         response = self._create_port_and_show(network, fixed_ips=[])
         self.assertEqual([], response['port']['fixed_ips'])
-        self.assertEqual(ip_allocation.IP_ALLOCATION_NONE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_NONE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
 
     def test_port_create_with_no_fixed_ips_no_ipam(self):
         """Ports without addresses on non-routed networks are not deferred"""
@@ -1064,8 +1068,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         response = self._create_port_and_show(network, fixed_ips=[])
 
         self.assertEqual([], response['port']['fixed_ips'])
-        self.assertEqual(ip_allocation.IP_ALLOCATION_NONE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_NONE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
 
     def test_port_without_ip_not_deferred(self):
         """Ports without addresses on non-routed networks are not deferred"""
@@ -1083,8 +1087,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         response = self.deserialize(self.fmt, request.get_response(self.api))
 
         self.assertEqual([], response['port']['fixed_ips'])
-        self.assertEqual(ip_allocation.IP_ALLOCATION_IMMEDIATE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_IMMEDIATE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
 
     def test_port_without_ip_not_deferred_no_binding(self):
         """Ports without addresses on non-routed networks are not deferred"""
@@ -1094,8 +1098,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         # Create a unbound port with no IP address (since there is no subnet)
         response = self._create_port_and_show(network)
         self.assertEqual([], response['port']['fixed_ips'])
-        self.assertEqual(ip_allocation.IP_ALLOCATION_IMMEDIATE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_IMMEDIATE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
 
     def test_port_update_is_host_aware(self):
         """Binding information is provided, subnets on segments"""
@@ -1103,7 +1107,7 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
             segment = self._test_create_segment(
                 network_id=network['network']['id'],
                 physical_network='physnet',
-                network_type=p_constants.TYPE_VLAN)
+                network_type=constants.TYPE_VLAN)
 
         # Map the host to the segment
         self._setup_host_mappings([(segment['segment']['id'], 'fakehost')])
@@ -1136,8 +1140,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         request = self.new_show_request('ports', port_id)
         response = self.deserialize(self.fmt, request.get_response(self.api))
 
-        self.assertEqual(ip_allocation.IP_ALLOCATION_DEFERRED,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_DEFERRED,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
         ips = response['port']['fixed_ips']
         self.assertEqual(0, len(ips))
 
@@ -1145,8 +1149,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         request = self.new_show_request('ports', port_id)
         response = self.deserialize(self.fmt, request.get_response(self.api))
 
-        self.assertEqual(ip_allocation.IP_ALLOCATION_IMMEDIATE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_IMMEDIATE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
         ips = response['port']['fixed_ips']
         self.assertNotEqual(0, len(ips))
 
@@ -1411,25 +1415,45 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
 
 
 class TestSegmentAwareIpamML2(TestSegmentAwareIpam):
+
+    VLAN_MIN = 200
+    VLAN_MAX = 209
+
     def setUp(self):
-        config.cfg.CONF.set_override('network_vlan_ranges',
-                                     ['physnet:200:209', 'physnet0:200:209',
-                                      'physnet1:200:209', 'physnet2:200:209'],
-                                     group='ml2_type_vlan')
+        # NOTE(mlavalle): ml2_type_vlan requires to be registered before used.
+        # This piece was refactored and removed from .config, so it causes
+        # a problem, when tests are executed with pdb.
+        # There is no problem when tests are running without debugger.
+        driver_type.register_ml2_drivers_vlan_opts()
+        cfg.CONF.set_override(
+            'network_vlan_ranges',
+            ['physnet:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX),
+             'physnet0:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX),
+             'physnet1:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX),
+             'physnet2:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX)],
+            group='ml2_type_vlan')
         super(TestSegmentAwareIpamML2, self).setUp(plugin='ml2')
+
+    def test_segmentation_id_stored_in_db(self):
+        network, segment, subnet = self._create_test_segment_with_subnet()
+        self.assertTrue(self.VLAN_MIN <=
+                        segment['segment']['segmentation_id'] <= self.VLAN_MAX)
+        retrieved_segment = self._show('segments', segment['segment']['id'])
+        self.assertEqual(segment['segment']['segmentation_id'],
+                         retrieved_segment['segment']['segmentation_id'])
 
 
 class TestNovaSegmentNotifier(SegmentAwareIpamTestCase):
     _mechanism_drivers = ['openvswitch', 'logger']
 
     def setUp(self):
-        config.cfg.CONF.set_override('mechanism_drivers',
-                                     self._mechanism_drivers,
-                                     group='ml2')
-        config.cfg.CONF.set_override('network_vlan_ranges',
-                                     ['physnet:200:209', 'physnet0:200:209',
-                                      'physnet1:200:209', 'physnet2:200:209'],
-                                     group='ml2_type_vlan')
+        cfg.CONF.set_override('mechanism_drivers',
+                              self._mechanism_drivers,
+                              group='ml2')
+        cfg.CONF.set_override('network_vlan_ranges',
+                              ['physnet:200:209', 'physnet0:200:209',
+                               'physnet1:200:209', 'physnet2:200:209'],
+                              group='ml2_type_vlan')
         super(TestNovaSegmentNotifier, self).setUp(plugin='ml2')
         # Need notifier here
         self.patch_notifier.stop()
@@ -2097,7 +2121,10 @@ class PlacementAPIClientTestCase(base.DietTestCase):
         placement_client.PlacementAPIClient()
 
         load_auth_mock.assert_called_once_with(cfg.CONF, 'placement')
-        ks_sess_mock.assert_called_once_with(auth=load_auth_mock.return_value)
+        ks_sess_mock.assert_called_once_with(auth=load_auth_mock.return_value,
+                                             cert=None,
+                                             timeout=None,
+                                             verify=True)
 
     def test_create_resource_provider(self):
         expected_payload = 'fake_resource_provider'

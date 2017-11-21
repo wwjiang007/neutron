@@ -23,6 +23,7 @@ import importlib
 import os
 import os.path
 import random
+import re
 import signal
 import sys
 import threading
@@ -36,28 +37,23 @@ from eventlet.green import subprocess
 import netaddr
 from neutron_lib import constants as n_const
 from neutron_lib.utils import helpers
-from neutron_lib.utils import net
-from oslo_concurrency import lockutils
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import fileutils
-from oslo_utils import importutils
 import six
-from stevedore import driver
 
 import neutron
-from neutron._i18n import _, _LE
+from neutron._i18n import _
 from neutron.db import api as db_api
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 LOG = logging.getLogger(__name__)
-SYNCHRONIZED_PREFIX = 'neutron-'
 
 DEFAULT_THROTTLER_VALUE = 2
 
-synchronized = lockutils.synchronized_with_prefix(SYNCHRONIZED_PREFIX)
+_SEPARATOR_REGEX = re.compile(r'[/\\]+')
 
 
 class WaitTimeout(Exception):
@@ -141,15 +137,6 @@ def is_extension_supported(plugin, ext_alias):
 
 def log_opt_values(log):
     cfg.CONF.log_opt_values(log, logging.DEBUG)
-
-
-@removals.remove(
-    message="Use get_random_mac from neutron_lib.utils.net",
-    version="Pike",
-    removal_version="Queens"
-)
-def get_random_mac(base_mac):
-    return net.get_random_mac(base_mac)
 
 
 def get_dhcp_agent_device_id(network_id, host):
@@ -277,15 +264,6 @@ def ip_version_from_int(ip_version_int):
     raise ValueError(_('Illegal IP version number'))
 
 
-def is_port_trusted(port):
-    """Used to determine if port can be trusted not to attack network.
-
-    Trust is currently based on the device_owner field starting with 'network:'
-    since we restrict who can use that in the default policy.json file.
-    """
-    return port['device_owner'].startswith(n_const.DEVICE_OWNER_NETWORK_PREFIX)
-
-
 class DelayedStringRenderer(object):
     """Takes a callable and its args and calls when __str__ is called
 
@@ -301,37 +279,6 @@ class DelayedStringRenderer(object):
 
     def __str__(self):
         return str(self.function(*self.args, **self.kwargs))
-
-
-def load_class_by_alias_or_classname(namespace, name):
-    """Load class using stevedore alias or the class name
-
-    :param namespace: namespace where the alias is defined
-    :param name: alias or class name of the class to be loaded
-    :returns: class if calls can be loaded
-    :raises ImportError if class cannot be loaded
-    """
-
-    if not name:
-        LOG.error(_LE("Alias or class name is not set"))
-        raise ImportError(_("Class not found."))
-    try:
-        # Try to resolve class by alias
-        mgr = driver.DriverManager(
-            namespace, name, warn_on_missing_entrypoint=False)
-        class_to_load = mgr.driver
-    except RuntimeError:
-        e1_info = sys.exc_info()
-        # Fallback to class name
-        try:
-            class_to_load = importutils.import_class(name)
-        except (ImportError, ValueError):
-            LOG.error(_LE("Error loading class by alias"),
-                      exc_info=e1_info)
-            LOG.error(_LE("Error loading class by class name"),
-                      exc_info=True)
-            raise ImportError(_("Class not found."))
-    return class_to_load
 
 
 def _hex_format(port, mask=0):
@@ -642,7 +589,7 @@ def create_object_with_dependency(creator, dep_getter, dep_creator,
                     try:
                         dep_deleter(dependency)
                     except Exception:
-                        LOG.exception(_LE("Failed cleaning up dependency %s"),
+                        LOG.exception("Failed cleaning up dependency %s",
                                       dep_id)
     return result, dependency
 
@@ -749,7 +696,7 @@ def attach_exc_details(e, msg, args=_NO_ARGS_MARKER):
 def extract_exc_details(e):
     for attr in ('_error_context_msg', '_error_context_args'):
         if not hasattr(e, attr):
-            return _LE('No details.')
+            return u'No details.'
     details = e._error_context_msg
     args = e._error_context_args
     if args is _NO_ARGS_MARKER:
@@ -759,6 +706,7 @@ def extract_exc_details(e):
 
 def import_modules_recursively(topdir):
     '''Import and return all modules below the topdir directory.'''
+    topdir = _SEPARATOR_REGEX.sub('/', topdir)
     modules = []
     for root, dirs, files in os.walk(topdir):
         for file_ in files:
@@ -769,7 +717,7 @@ def import_modules_recursively(topdir):
             if module == '__init__':
                 continue
 
-            import_base = root.replace('/', '.')
+            import_base = _SEPARATOR_REGEX.sub('.', root)
 
             # NOTE(ihrachys): in Python3, or when we are not located in the
             # directory containing neutron code, __file__ is absolute, so we

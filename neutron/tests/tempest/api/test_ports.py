@@ -13,8 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from tempest.common import utils
 from tempest.lib import decorators
-from tempest import test
 
 from neutron.tests.tempest.api import base
 
@@ -44,7 +44,7 @@ class PortsTestJSON(base.BaseNetworkTest):
         self.assertEqual(ip, dns_assignment['ip_address'])
 
     @decorators.idempotent_id('c72c1c0c-2193-4aca-bbb4-b1442640bbbb')
-    @test.requires_ext(extension="standard-attr-description",
+    @utils.requires_ext(extension="standard-attr-description",
                        service="network")
     def test_create_update_port_description(self):
         body = self.create_port(self.network,
@@ -59,7 +59,7 @@ class PortsTestJSON(base.BaseNetworkTest):
         self.assertEqual('d2', body['description'])
 
     @decorators.idempotent_id('539fbefe-fb36-48aa-9a53-8c5fbd44e492')
-    @test.requires_ext(extension="dns-integration",
+    @utils.requires_ext(extension="dns-integration",
                        service="network")
     def test_create_update_port_with_dns_name(self):
         # NOTE(manjeets) dns_domain is set to openstackgate.local
@@ -80,7 +80,7 @@ class PortsTestJSON(base.BaseNetworkTest):
         self._confirm_dns_assignment(body)
 
     @decorators.idempotent_id('435e89df-a8bb-4b41-801a-9f20d362d777')
-    @test.requires_ext(extension="dns-integration",
+    @utils.requires_ext(extension="dns-integration",
                        service="network")
     def test_create_update_port_with_no_dns_name(self):
         self.create_subnet(self.network)
@@ -90,6 +90,30 @@ class PortsTestJSON(base.BaseNetworkTest):
         port_body = self.client.show_port(body['id'])
         self.assertFalse(port_body['port']['dns_name'])
         self._confirm_dns_assignment(port_body['port'])
+
+    @decorators.idempotent_id('dfe8cc79-18d9-4ae8-acef-3ec6bb719aa7')
+    @utils.requires_ext(extension="dns-domain-ports",
+                       service="network")
+    def test_create_update_port_with_dns_domain(self):
+        self.create_subnet(self.network)
+        body = self.create_port(self.network, dns_name='d1',
+                                dns_domain='test.org.')
+        self.assertEqual('d1', body['dns_name'])
+        self.assertEqual('test.org.', body['dns_domain'])
+        self._confirm_dns_assignment(body)
+        body = self.client.list_ports(id=body['id'])['ports'][0]
+        self._confirm_dns_assignment(body)
+        self.assertEqual('d1', body['dns_name'])
+        self.assertEqual('test.org.', body['dns_domain'])
+        body = self.client.update_port(body['id'],
+                                       dns_name='d2', dns_domain='d.org.')
+        self.assertEqual('d2', body['port']['dns_name'])
+        self.assertEqual('d.org.', body['dns_domain'])
+        self._confirm_dns_assignment(body['port'])
+        body = self.client.show_port(body['port']['id'])['port']
+        self.assertEqual('d2', body['dns_name'])
+        self.assertEqual('d.org.', body['dns_domain'])
+        self._confirm_dns_assignment(body)
 
     @decorators.idempotent_id('c72c1c0c-2193-4aca-bbb4-b1442640c123')
     def test_change_dhcp_flag_then_create_port(self):

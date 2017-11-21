@@ -16,16 +16,16 @@
 import random
 
 from neutron_lib import context as neutron_ctx
+from neutron_lib.plugins.ml2 import api
 from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log
 
-from neutron._i18n import _LE
 from neutron.common import exceptions as exc
 from neutron.db import api as db_api
+from neutron.objects import base as base_obj
 from neutron.plugins.common import utils as p_utils
-from neutron.plugins.ml2 import driver_api as api
 
 
 LOG = log.getLogger(__name__)
@@ -42,7 +42,7 @@ class BaseTypeDriver(api.ML2TypeDriver):
                 cfg.CONF.ml2.physical_network_mtus, unique_values=False
             )
         except Exception as e:
-            LOG.error(_LE("Failed to parse physical_network_mtus: %s"), e)
+            LOG.error("Failed to parse physical_network_mtus: %s", e)
             self.physnet_mtus = []
 
     def get_mtu(self, physical_network=None):
@@ -58,8 +58,11 @@ class SegmentTypeDriver(BaseTypeDriver):
 
     def __init__(self, model):
         super(SegmentTypeDriver, self).__init__()
-        self.model = model
-        self.primary_keys = set(dict(model.__table__.columns))
+        if issubclass(model, base_obj.NeutronDbObject):
+            self.model = model.db_model
+        else:
+            self.model = model
+        self.primary_keys = set(dict(self.model.__table__.columns))
         self.primary_keys.remove("allocated")
 
     # TODO(ataraday): get rid of this method when old TypeDriver won't be used

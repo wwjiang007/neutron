@@ -13,10 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.utils import runtime
 from oslo_log import log as logging
-
-from neutron._i18n import _LE
-from neutron.common import utils as utils
 
 
 LOG = logging.getLogger(__name__)
@@ -33,10 +31,9 @@ def load_metering_driver(plugin, conf):
     """
 
     try:
-        loaded_class = utils.load_class_by_alias_or_classname(
+        loaded_class = runtime.load_class_by_alias_or_classname(
                 METERING_NAMESPACE, conf.driver)
         return loaded_class(plugin, conf)
     except ImportError:
-        LOG.error(_LE("Error loading metering driver '%s'"),
-                  conf.driver)
+        LOG.error("Error loading metering driver '%s'", conf.driver)
         raise SystemExit(1)

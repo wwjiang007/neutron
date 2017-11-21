@@ -16,16 +16,13 @@
 from oslo_config import cfg
 from oslo_log import log as logging
 
-from neutron._i18n import _LI
 from neutron.agent.common import ovs_lib
-from neutron.agent.linux import interface
 from neutron.agent.linux import ip_lib
 from neutron.common import config
 from neutron.conf.agent import cmd
 from neutron.conf.agent import common as agent_config
 from neutron.conf.agent.l3 import config as l3_config
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants
-
 
 LOG = logging.getLogger(__name__)
 
@@ -40,8 +37,8 @@ def setup_conf():
     conf = cfg.CONF
     cmd.register_cmd_opts(cmd.ovs_opts, conf)
     l3_config.register_l3_agent_config_opts(l3_config.OPTS, conf)
-    conf.register_opts(interface.OPTS)
     agent_config.register_interface_driver_opts_helper(conf)
+    agent_config.register_interface_opts()
     return conf
 
 
@@ -73,7 +70,7 @@ def delete_neutron_ports(ports):
         device = ip_lib.IPDevice(port)
         if device.exists():
             device.link.delete()
-            LOG.info(_LI("Deleting port: %s"), port)
+            LOG.info("Deleting port: %s", port)
 
 
 def main():
@@ -103,7 +100,7 @@ def main():
     ports = collect_neutron_ports(available_configuration_bridges)
 
     for bridge in bridges:
-        LOG.info(_LI("Cleaning bridge: %s"), bridge)
+        LOG.info("Cleaning bridge: %s", bridge)
         ovs = ovs_lib.OVSBridge(bridge)
         if conf.ovs_all_ports:
             port_names = ovs.get_port_name_list()
@@ -115,4 +112,4 @@ def main():
     # Remove remaining ports created by Neutron (usually veth pair)
     delete_neutron_ports(ports)
 
-    LOG.info(_LI("OVS cleanup completed successfully"))
+    LOG.info("OVS cleanup completed successfully")

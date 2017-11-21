@@ -18,12 +18,9 @@ IPv6-related utilities and helper functions.
 """
 import os
 
-from debtcollector import moves
 import netaddr
 from neutron_lib import constants as const
 from oslo_log import log
-
-from neutron._i18n import _LI
 
 
 LOG = log.getLogger(__name__)
@@ -45,16 +42,11 @@ def is_enabled_and_bind_by_default():
         else:
             _IS_IPV6_ENABLED = False
         if not _IS_IPV6_ENABLED:
-            LOG.info(_LI("IPv6 not present or configured not to bind to new "
-                         "interfaces on this system. Please ensure IPv6 is "
-                         "enabled and /proc/sys/net/ipv6/conf/default/"
-                         "disable_ipv6 is set to 0 to enable IPv6."))
+            LOG.info("IPv6 not present or configured not to bind to new "
+                     "interfaces on this system. Please ensure IPv6 is "
+                     "enabled and /proc/sys/net/ipv6/conf/default/"
+                     "disable_ipv6 is set to 0 to enable IPv6.")
     return _IS_IPV6_ENABLED
-
-
-is_enabled = moves.moved_function(is_enabled_and_bind_by_default,
-                                  'is_enabled', __name__, version='Ocata',
-                                  removal_version='Pike')
 
 
 def is_auto_address_subnet(subnet):

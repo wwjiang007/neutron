@@ -13,12 +13,13 @@
 #    under the License.
 
 import collections
+
 import netaddr
 from neutron_lib import constants as lib_constants
 from neutron_lib.utils import helpers
 from oslo_log import log as logging
 
-from neutron._i18n import _, _LE, _LW
+from neutron._i18n import _
 from neutron.agent.l3 import namespaces
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
@@ -160,7 +161,9 @@ class RouterInfo(object):
         """Filter Floating IPs to be hosted on this agent."""
         return self.router.get(lib_constants.FLOATINGIP_KEY, [])
 
-    def floating_forward_rules(self, floating_ip, fixed_ip):
+    def floating_forward_rules(self, fip):
+        fixed_ip = fip['fixed_ip_address']
+        floating_ip = fip['floating_ip_address']
         return [('PREROUTING', '-d %s/32 -j DNAT --to-destination %s' %
                  (floating_ip, fixed_ip)),
                 ('OUTPUT', '-d %s/32 -j DNAT --to-destination %s' %
@@ -214,9 +217,7 @@ class RouterInfo(object):
         # Loop once to ensure that floating ips are configured.
         for fip in floating_ips:
             # Rebuild iptables rules for the floating ip.
-            fixed = fip['fixed_ip_address']
-            fip_ip = fip['floating_ip_address']
-            for chain, rule in self.floating_forward_rules(fip_ip, fixed):
+            for chain, rule in self.floating_forward_rules(fip):
                 self.iptables_manager.ipv4['nat'].add_rule(chain, rule,
                                                            tag='floating_ip')
 
@@ -297,11 +298,14 @@ class RouterInfo(object):
         except RuntimeError:
             # any exception occurred here should cause the floating IP
             # to be set in error state
-            LOG.warning(_LW("Unable to configure IP address for "
-                            "floating IP: %s"), fip['id'])
+            LOG.warning("Unable to configure IP address for "
+                        "floating IP: %s", fip['id'])
 
     def add_floating_ip(self, fip, interface_name, device):
         raise NotImplementedError()
+
+    def migrate_centralized_floating_ip(self, fip, interface_name, device):
+        pass
 
     def gateway_redirect_cleanup(self, rtr_interface):
         pass
@@ -317,6 +321,9 @@ class RouterInfo(object):
 
     def get_router_cidrs(self, device):
         return set([addr['cidr'] for addr in device.addr.list()])
+
+    def get_centralized_router_cidrs(self):
+        return set()
 
     def process_floating_ip_addresses(self, interface_name):
         """Configure IP addresses on router's external gateway interface.
@@ -343,6 +350,8 @@ class RouterInfo(object):
             ip_cidr = common_utils.ip_to_cidr(fip_ip)
             new_cidrs.add(ip_cidr)
             fip_statuses[fip['id']] = lib_constants.FLOATINGIP_STATUS_ACTIVE
+            cent_router_cidrs = self.get_centralized_router_cidrs()
+
             if ip_cidr not in existing_cidrs:
                 fip_statuses[fip['id']] = self.add_floating_ip(
                     fip, interface_name, device)
@@ -356,6 +365,12 @@ class RouterInfo(object):
                           {'old': self.fip_map[fip_ip],
                            'new': fip['fixed_ip_address']})
                 fip_statuses[fip['id']] = self.move_floating_ip(fip)
+            elif (ip_cidr in cent_router_cidrs and
+                fip.get('host') == self.host):
+                LOG.debug("Floating IP is migrating from centralized "
+                          "to distributed: %s", fip)
+                fip_statuses[fip['id']] = self.migrate_centralized_floating_ip(
+                    fip, interface_name, device)
             elif fip_statuses[fip['id']] == fip['status']:
                 # mark the status as not changed. we can't remove it because
                 # that's how the caller determines that it was removed
@@ -407,7 +422,7 @@ class RouterInfo(object):
     def _internal_network_updated(self, port, subnet_id, prefix, old_prefix,
                                   updated_cidrs):
         interface_name = self.get_internal_device_name(port['id'])
-        if prefix != n_const.PROVISIONAL_IPV6_PD_PREFIX:
+        if prefix != lib_constants.PROVISIONAL_IPV6_PD_PREFIX:
             fixed_ips = port['fixed_ips']
             for fixed_ip in fixed_ips:
                 if fixed_ip['subnet_id'] == subnet_id:
@@ -475,10 +490,13 @@ class RouterInfo(object):
         for existing_port in existing_ports:
             current_port = current_ports_dict.get(existing_port['id'])
             if current_port:
-                if (sorted(existing_port['fixed_ips'],
+                fixed_ips_changed = (
+                    sorted(existing_port['fixed_ips'],
                            key=helpers.safe_sort_key) !=
-                        sorted(current_port['fixed_ips'],
-                               key=helpers.safe_sort_key)):
+                    sorted(current_port['fixed_ips'],
+                           key=helpers.safe_sort_key))
+                mtu_changed = existing_port['mtu'] != current_port['mtu']
+                if fixed_ips_changed or mtu_changed:
                     updated_ports[current_port['id']] = current_port
         return updated_ports
 
@@ -487,7 +505,8 @@ class RouterInfo(object):
         if 'subnets' in port:
             for subnet in port['subnets']:
                 if (netaddr.IPNetwork(subnet['cidr']).version == 6 and
-                    subnet['cidr'] != n_const.PROVISIONAL_IPV6_PD_PREFIX):
+                    subnet['cidr'] !=
+                        lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
                     return True
 
     def enable_radvd(self, internal_ports=None):
@@ -501,7 +520,9 @@ class RouterInfo(object):
                   self.router_id)
         self.radvd.disable()
 
-    def internal_network_updated(self, interface_name, ip_cidrs):
+    def internal_network_updated(self, interface_name, ip_cidrs, mtu):
+        self.driver.set_mtu(interface_name, mtu, namespace=self.ns_name,
+                            prefix=INTERNAL_DEV_PREFIX)
         self.driver.init_router_port(
             interface_name,
             ip_cidrs=ip_cidrs,
@@ -561,7 +582,8 @@ class RouterInfo(object):
                 ip_cidrs = common_utils.fixed_ip_cidrs(p['fixed_ips'])
                 LOG.debug("updating internal network for port %s", p)
                 updated_cidrs += ip_cidrs
-                self.internal_network_updated(interface_name, ip_cidrs)
+                self.internal_network_updated(
+                    interface_name, ip_cidrs, p['mtu'])
                 enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
 
         # Check if there is any pd prefix update
@@ -875,7 +897,7 @@ class RouterInfo(object):
 
         except n_exc.FloatingIpSetupException:
             # All floating IPs must be put in error state
-            LOG.exception(_LE("Failed to process floating IPs."))
+            LOG.exception("Failed to process floating IPs.")
             fip_statuses = self.put_fips_in_error_state()
         finally:
             self.update_fip_statuses(fip_statuses)
@@ -901,7 +923,7 @@ class RouterInfo(object):
         except (n_exc.FloatingIpSetupException,
                 n_exc.IpTablesApplyException):
                 # All floating IPs must be put in error state
-                LOG.exception(_LE("Failed to process floating IPs."))
+                LOG.exception("Failed to process floating IPs.")
                 fip_statuses = self.put_fips_in_error_state()
         finally:
             self.update_fip_statuses(fip_statuses)
@@ -1027,7 +1049,7 @@ class RouterInfo(object):
                     'scope',
                     self.address_scope_filter_rule(device_name, mark))
         for subnet_id, prefix in self.pd_subnets.items():
-            if prefix != n_const.PROVISIONAL_IPV6_PD_PREFIX:
+            if prefix != lib_constants.PROVISIONAL_IPV6_PD_PREFIX:
                 self._process_pd_iptables_rules(prefix, subnet_id)
 
     def process_ports_address_scope_iptables(self):
@@ -1095,8 +1117,8 @@ class RouterInfo(object):
             self.agent.pd.sync_router(self.router['id'])
             self._process_external_on_delete()
         else:
-            LOG.warning(_LW("Can't gracefully delete the router %s: "
-                            "no router namespace found."), self.router['id'])
+            LOG.warning("Can't gracefully delete the router %s: "
+                        "no router namespace found.", self.router['id'])
 
     @common_utils.exception_logger()
     def process(self):

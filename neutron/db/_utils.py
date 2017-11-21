@@ -17,12 +17,11 @@ NOTE: This module shall not be used by external projects. It will be moved
 
 import contextlib
 
+from neutron_lib.api import attributes
 from oslo_log import log as logging
 from oslo_utils import excutils
 from sqlalchemy.ext import associationproxy
 
-from neutron._i18n import _LE
-from neutron.api.v2 import attributes
 
 LOG = logging.getLogger(__name__)
 
@@ -40,7 +39,7 @@ def safe_creation(context, create_fn, delete_fn, create_bindings,
 
     More information when this method could be used can be found in
     developer guide - Effective Neutron: Database interaction section.
-    http://docs.openstack.org/developer/neutron/devref/effective_neutron.html
+    https://docs.openstack.org/neutron/latest/contributor/effective_neutron.html
 
     :param context: context
 
@@ -67,9 +66,9 @@ def safe_creation(context, create_fn, delete_fn, create_bindings,
                 try:
                     delete_fn(obj['id'])
                 except Exception as e:
-                    LOG.error(_LE("Cannot clean up created object %(obj)s. "
-                                  "Exception: %(exc)s"), {'obj': obj['id'],
-                                                          'exc': e})
+                    LOG.error("Cannot clean up created object %(obj)s. "
+                              "Exception: %(exc)s", {'obj': obj['id'],
+                                                     'exc': e})
         return obj, value
 
 

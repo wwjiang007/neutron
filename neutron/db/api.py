@@ -20,6 +20,7 @@ import weakref
 from debtcollector import removals
 from neutron_lib.db import api
 from neutron_lib import exceptions
+from neutron_lib.objects import exceptions as obj_exc
 from oslo_config import cfg
 from oslo_db import api as oslo_db_api
 from oslo_db import exception as db_exc
@@ -34,9 +35,6 @@ from sqlalchemy import event  # noqa
 from sqlalchemy import exc as sql_exc
 from sqlalchemy import orm
 from sqlalchemy.orm import exc
-
-from neutron._i18n import _LE
-from neutron.objects import exceptions as obj_exc
 
 
 def set_hook(engine):
@@ -148,8 +146,8 @@ def retry_if_session_inactive(context_var_name='context'):
             # functions
             ctx_arg_index = p_util.getargspec(f).args.index(context_var_name)
         except ValueError:
-            raise RuntimeError(_LE("Could not find position of var %s")
-                               % context_var_name)
+            raise RuntimeError("Could not find position of var %s" %
+                               context_var_name)
         f_with_retry = retry_db_errors(f)
 
         @six.wraps(f)
@@ -164,21 +162,6 @@ def retry_if_session_inactive(context_var_name='context'):
             return method(*args, **kwargs)
         return wrapped
     return decorator
-
-
-def reraise_as_retryrequest(f):
-    """Packs retriable exceptions into a RetryRequest."""
-
-    @six.wraps(f)
-    def wrapped(*args, **kwargs):
-        try:
-            return f(*args, **kwargs)
-        except Exception as e:
-            with excutils.save_and_reraise_exception() as ctx:
-                if is_retriable(e):
-                    ctx.reraise = False
-                    raise db_exc.RetryRequest(e)
-    return wrapped
 
 
 def _is_nested_instance(e, etypes):

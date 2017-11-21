@@ -13,18 +13,19 @@
 # under the License.
 
 import mock
+from neutron_lib.api.definitions import metering as metering_apidef
 from neutron_lib import context
+from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
 from oslo_utils import uuidutils
 
-from neutron.api.v2 import attributes as attr
+from neutron.api.rpc.agentnotifiers import metering_rpc_agent_api
 from neutron.common import utils
 from neutron.db import api as db_api
 from neutron.db.metering import metering_rpc
 from neutron.db.models import agent as agent_model
 from neutron.extensions import l3 as ext_l3
 from neutron.extensions import metering as ext_metering
-from neutron.plugins.common import constants
 from neutron.tests.common import helpers
 from neutron.tests import tools
 from neutron.tests.unit.db.metering import test_metering_db
@@ -43,9 +44,6 @@ METERING_SERVICE_PLUGIN_KLASS = (
 class MeteringTestExtensionManager(object):
 
     def get_resources(self):
-        attr.RESOURCE_ATTRIBUTE_MAP.update(ext_metering.RESOURCE_ATTRIBUTE_MAP)
-        attr.RESOURCE_ATTRIBUTE_MAP.update(ext_l3.RESOURCE_ATTRIBUTE_MAP)
-
         l3_res = ext_l3.L3.get_resources()
         metering_res = ext_metering.Metering.get_resources()
 
@@ -78,7 +76,7 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
 
     resource_prefix_map = dict(
         (k.replace('_', '-'), "/metering")
-        for k in ext_metering.RESOURCE_ATTRIBUTE_MAP.keys()
+        for k in metering_apidef.RESOURCE_ATTRIBUTE_MAP.keys()
     )
 
     def setUp(self):
@@ -132,6 +130,23 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
                        '.remove_metering_label_rule')
         self.remove_rule_patch = mock.patch(remove_rule)
         self.mock_remove_rule = self.remove_rule_patch.start()
+
+    def test_routers_updated_on_host_rpc_call(self):
+        router_test = {
+            'id': 'xyz',
+            'name': 'testrouter'}
+        notify_host = ('neutron.api.rpc.agentnotifiers.' +
+                       'metering_rpc_agent_api.MeteringAgentNotifyAPI' +
+                       '._notification_host')
+        self.notify_patch = mock.patch(notify_host)
+        self.mock_notify_host = self.notify_patch.start()
+        metering_rpc_handle = metering_rpc_agent_api.MeteringAgentNotifyAPI()
+        metering_rpc_handle.routers_updated_on_host(
+            self.ctx,
+            [router_test['id']],
+            'test_host')
+        self.mock_notify_host.assert_called_with(self.ctx, 'routers_updated',
+                                                 'test_host', routers=['xyz'])
 
     def test_add_metering_label_rpc_call(self):
         second_uuid = 'e27fe2df-376e-4ac7-ae13-92f050a21f84'
@@ -305,7 +320,7 @@ class TestMeteringPluginL3AgentScheduler(
 
     resource_prefix_map = dict(
         (k.replace('_', '-'), "/metering")
-        for k in ext_metering.RESOURCE_ATTRIBUTE_MAP.keys()
+        for k in metering_apidef.RESOURCE_ATTRIBUTE_MAP.keys()
     )
 
     def setUp(self, plugin_str=None, service_plugins=None, scheduler=None):
@@ -430,7 +445,7 @@ class TestMeteringPluginRpcFromL3Agent(
 
     resource_prefix_map = dict(
         (k.replace('_', '-'), "/metering")
-        for k in ext_metering.RESOURCE_ATTRIBUTE_MAP
+        for k in metering_apidef.RESOURCE_ATTRIBUTE_MAP
     )
 
     def setUp(self):

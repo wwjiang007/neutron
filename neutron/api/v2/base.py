@@ -16,7 +16,8 @@
 import collections
 import copy
 
-import netaddr
+from neutron_lib.api import attributes
+from neutron_lib.api import faults
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib import exceptions
@@ -25,9 +26,8 @@ from oslo_policy import policy as oslo_policy
 from oslo_utils import excutils
 import webob.exc
 
-from neutron._i18n import _, _LE, _LI
+from neutron._i18n import _
 from neutron.api import api_common
-from neutron.api.v2 import attributes
 from neutron.api.v2 import resource as wsgi_resource
 from neutron.common import constants as n_const
 from neutron.common import exceptions as n_exc
@@ -39,16 +39,6 @@ from neutron.quota import resource_registry
 
 
 LOG = logging.getLogger(__name__)
-
-FAULT_MAP = {exceptions.NotFound: webob.exc.HTTPNotFound,
-             exceptions.Conflict: webob.exc.HTTPConflict,
-             exceptions.InUse: webob.exc.HTTPConflict,
-             exceptions.BadRequest: webob.exc.HTTPBadRequest,
-             exceptions.ServiceUnavailable: webob.exc.HTTPServiceUnavailable,
-             exceptions.NotAuthorized: webob.exc.HTTPForbidden,
-             netaddr.AddrFormatError: webob.exc.HTTPBadRequest,
-             oslo_policy.PolicyNotAuthorized: webob.exc.HTTPForbidden
-             }
 
 
 class Controller(object):
@@ -125,8 +115,8 @@ class Controller(object):
                     _("Native pagination depend on native sorting")
                 )
             if not self._allow_sorting:
-                LOG.info(_LI("Allow sorting is enabled because native "
-                             "pagination requires native sorting"))
+                LOG.info("Allow sorting is enabled because native "
+                         "pagination requires native sorting")
                 self._allow_sorting = True
         self.parent = parent
         if parent:
@@ -419,8 +409,8 @@ class Controller(object):
                     except Exception:
                         # broad catch as our only purpose is to log the
                         # exception
-                        LOG.exception(_LE("Unable to undo add for "
-                                          "%(resource)s %(id)s"),
+                        LOG.exception("Unable to undo add for "
+                                      "%(resource)s %(id)s",
                                       {'resource': self._resource,
                                        'id': obj['id']})
                 # TODO(salvatore-orlando): The object being processed when the
@@ -715,19 +705,21 @@ class Controller(object):
             msg = _("Unable to find '%s' in request body") % resource
             raise webob.exc.HTTPBadRequest(msg)
 
-        attributes.populate_tenant_id(context, res_dict, attr_info, is_create)
-        attributes.verify_attributes(res_dict, attr_info)
+        attr_ops = attributes.AttributeInfo(attr_info)
+        attr_ops.populate_project_id(context, res_dict, is_create)
+        attributes.populate_project_info(attr_info)
+        attr_ops.verify_attributes(res_dict)
 
         if is_create:  # POST
-            attributes.fill_default_value(attr_info, res_dict,
-                                          webob.exc.HTTPBadRequest)
+            attr_ops.fill_post_defaults(
+                res_dict, exc_cls=webob.exc.HTTPBadRequest)
         else:  # PUT
             for attr, attr_vals in attr_info.items():
                 if attr in res_dict and not attr_vals['allow_put']:
                     msg = _("Cannot update read-only attribute %s") % attr
                     raise webob.exc.HTTPBadRequest(msg)
 
-        attributes.convert_value(attr_info, res_dict, webob.exc.HTTPBadRequest)
+        attr_ops.convert_values(res_dict, exc_cls=webob.exc.HTTPBadRequest)
         return body
 
     def _validate_network_tenant_ownership(self, request, resource_item):
@@ -760,4 +752,4 @@ def create_resource(collection, resource, plugin, params, allow_bulk=False,
                             allow_pagination=allow_pagination,
                             allow_sorting=allow_sorting)
 
-    return wsgi_resource.Resource(controller, FAULT_MAP)
+    return wsgi_resource.Resource(controller, faults.FAULT_MAP)

@@ -24,23 +24,15 @@ from oslo_utils import fileutils
 import psutil
 import six
 
-from neutron._i18n import _, _LW, _LE
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import utils
-
 from neutron.conf.agent import common as agent_cfg
+
 
 LOG = logging.getLogger(__name__)
 
 
-OPTS = [
-    cfg.StrOpt('external_pids',
-               default='$state_path/external/pids',
-               help=_('Location to store child pid files')),
-]
-
-
-cfg.CONF.register_opts(OPTS)
+agent_cfg.register_external_process_opts()
 agent_cfg.register_process_monitor_opts(cfg.CONF)
 
 
@@ -237,9 +229,9 @@ class ProcessMonitor(object):
             pm = self._monitored_processes.get(service_id)
 
             if pm and not pm.active:
-                LOG.error(_LE("%(service)s for %(resource_type)s "
-                              "with uuid %(uuid)s not found. "
-                              "The process should not have died"),
+                LOG.error("%(service)s for %(resource_type)s "
+                          "with uuid %(uuid)s not found. "
+                          "The process should not have died",
                           {'service': service_id.service,
                            'resource_type': self._resource_type,
                            'uuid': service_id.uuid})
@@ -257,14 +249,14 @@ class ProcessMonitor(object):
         action_function(service_id)
 
     def _respawn_action(self, service_id):
-        LOG.warning(_LW("Respawning %(service)s for uuid %(uuid)s"),
+        LOG.warning("Respawning %(service)s for uuid %(uuid)s",
                     {'service': service_id.service,
                      'uuid': service_id.uuid})
         self._monitored_processes[service_id].enable()
 
     def _exit_action(self, service_id):
-        LOG.error(_LE("Exiting agent as programmed in check_child_processes_"
-                      "actions"))
+        LOG.error("Exiting agent as programmed in check_child_processes_"
+                  "actions")
         self._exit_handler(service_id.uuid, service_id.service)
 
     def _exit_handler(self, uuid, service):
@@ -274,7 +266,7 @@ class ProcessMonitor(object):
         check_child_processes_actions, and one of our external processes die
         unexpectedly.
         """
-        LOG.error(_LE("Exiting agent because of a malfunction with the "
-                      "%(service)s process identified by uuid %(uuid)s"),
+        LOG.error("Exiting agent because of a malfunction with the "
+                  "%(service)s process identified by uuid %(uuid)s",
                   {'service': service, 'uuid': uuid})
         raise SystemExit(1)

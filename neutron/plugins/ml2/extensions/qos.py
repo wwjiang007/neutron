@@ -13,11 +13,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.plugins.ml2 import api
 from oslo_log import log as logging
 
 from neutron.core_extensions import base as base_core
 from neutron.core_extensions import qos as qos_core
-from neutron.plugins.ml2 import driver_api as api
 
 LOG = logging.getLogger(__name__)
 
@@ -32,13 +32,15 @@ class QosExtensionDriver(api.ExtensionDriver):
 
     def process_create_network(self, context, data, result):
         self.core_ext_handler.process_fields(
-            context, base_core.NETWORK, data, result)
+            context, base_core.NETWORK, base_core.EVENT_CREATE, data, result)
 
-    process_update_network = process_create_network
+    def process_update_network(self, context, data, result):
+        self.core_ext_handler.process_fields(
+            context, base_core.NETWORK, base_core.EVENT_UPDATE, data, result)
 
     def process_create_port(self, context, data, result):
         self.core_ext_handler.process_fields(
-            context, base_core.PORT, data, result)
+            context, base_core.PORT, base_core.EVENT_UPDATE, data, result)
 
     process_update_port = process_create_port
 

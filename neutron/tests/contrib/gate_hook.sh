@@ -44,13 +44,18 @@ function load_conf_hook {
 # Tweak gate configuration for our rally scenarios
 function load_rc_for_rally {
     for file in $(ls $RALLY_EXTRA_DIR/*.setup); do
-        $DSCONF merge_lc $LOCAL_CONF $file
+        tmpfile=$(tempfile)
+        config=$(cat $file)
+        echo "[[local|localrc]]" > $tmpfile
+        $DSCONF setlc_raw $tmpfile "$config"
+        $DSCONF merge_lc $LOCAL_CONF $tmpfile
+        rm -f $tmpfile
     done
 }
 
 
 case $VENV in
-"dsvm-functional"|"dsvm-fullstack")
+"dsvm-functional"|"dsvm-fullstack"|"dsvm-functional-python35"|"dsvm-fullstack-python35")
     # The following need to be set before sourcing
     # configure_for_func_testing.
     GATE_STACK_USER=stack
@@ -81,12 +86,6 @@ case $VENV in
 
     # enable monitoring
     load_rc_hook dstat
-
-    # Make the workspace owned by the stack user
-    sudo chown -R $STACK_USER:$STACK_USER $BASE
-
-    # deploy devstack as per local.conf
-    cd $DEVSTACK_PATH && sudo -H -u $GATE_STACK_USER ./stack.sh
     ;;
 
 "api"|"api-pecan"|"full-ovsfw"|"full-pecan"|"dsvm-scenario-ovs"|"dsvm-scenario-linuxbridge")
@@ -98,10 +97,11 @@ case $VENV in
     load_conf_hook quotas
     load_rc_hook dns
     load_rc_hook qos
+    load_rc_hook segments
     load_rc_hook trunk
     load_conf_hook vlan_provider
-    load_conf_hook type_drivers
     load_conf_hook osprofiler
+    load_conf_hook availability_zone
     if [[ "$VENV" =~ "dsvm-scenario" ]]; then
         load_rc_hook ubuntu_image
     fi
@@ -114,21 +114,28 @@ case $VENV in
     if [[ "$VENV" =~ "ovs" ]]; then
         load_conf_hook ovsfw
     fi
+    if [[ "$VENV" != "dsvm-scenario-linuxbridge" ]]; then
+        load_conf_hook tunnel_types
+    fi
+    if [[ "$VENV" =~ "dsvm-scenario-linuxbridge" ]]; then
+        # linuxbridge doesn't support gre
+        load_conf_hook linuxbridge_type_drivers
+    else
+        load_conf_hook openvswitch_type_drivers
+    fi
     if [[ "$FLAVOR" = "dvrskip" ]]; then
         load_conf_hook disable_dvr
     fi
-
-    export DEVSTACK_LOCALCONF=$(cat $LOCAL_CONF)
-    $BASE/new/devstack-gate/devstack-vm-gate.sh
     ;;
 
 "rally")
     load_rc_for_rally
-    export DEVSTACK_LOCALCONF=$(cat $LOCAL_CONF)
-    $BASE/new/devstack-gate/devstack-vm-gate.sh
     ;;
 
 *)
     echo "Unrecognized environment $VENV".
     exit 1
 esac
+
+export DEVSTACK_LOCALCONF=$(cat $LOCAL_CONF)
+$BASE/new/devstack-gate/devstack-vm-gate.sh

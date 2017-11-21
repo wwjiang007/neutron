@@ -65,11 +65,6 @@ core_opts = [
                help=_("Maximum number of DNS nameservers per subnet")),
     cfg.IntOpt('max_subnet_host_routes', default=20,
                help=_("Maximum number of host routes per subnet")),
-    cfg.IntOpt('max_fixed_ips_per_port', default=5,
-               deprecated_for_removal=True,
-               help=_("Maximum number of fixed ips per port. This option "
-                      "is deprecated and will be removed in the Ocata "
-                      "release.")),
     cfg.BoolOpt('ipv6_pd_enabled', default=False,
                 help=_("Enables IPv6 Prefix Delegation for automatic subnet "
                        "CIDR allocation. "
@@ -122,11 +117,6 @@ core_opts = [
     cfg.BoolOpt('vlan_transparent', default=False,
                 help=_('If True, then allow plugins that support it to '
                        'create VLAN transparent networks.')),
-    cfg.StrOpt('web_framework', default='pecan',
-               choices=('legacy', 'pecan'),
-               help=_("This will choose the web framework in which to run "
-                      "the Neutron API server. 'pecan' is a new "
-                      "rewrite of the API routing components.")),
     cfg.IntOpt('global_physnet_mtu', default=constants.DEFAULT_NETWORK_MTU,
                deprecated_name='segment_mtu', deprecated_group='ml2',
                help=_('MTU of the underlying physical network. Neutron uses '

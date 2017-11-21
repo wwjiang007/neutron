@@ -28,7 +28,7 @@ from oslo_log import log as logging
 import oslo_messaging
 from oslo_utils import excutils
 
-from neutron._i18n import _, _LW
+from neutron._i18n import _
 from neutron.common import constants as n_const
 from neutron.common import exceptions as n_exc
 from neutron.common import utils
@@ -48,7 +48,7 @@ class DhcpRpcCallback(object):
     This class implements the server side of an rpc interface.  The client
     side of this interface can be found in
     neutron.agent.dhcp.agent.DhcpPluginApi.  For more information about
-    changing rpc interfaces, see doc/source/devref/rpc_api.rst.
+    changing rpc interfaces, see doc/source/contributor/internals/rpc_api.rst.
     """
 
     # API version history:
@@ -120,9 +120,9 @@ class DhcpRpcCallback(object):
                         ctxt.reraise = True
                 if ctxt.reraise:
                     net_id = port['port']['network_id']
-                    LOG.warning(_LW("Action %(action)s for network %(net_id)s "
-                                    "could not complete successfully: "
-                                    "%(reason)s"),
+                    LOG.warning("Action %(action)s for network %(net_id)s "
+                                "could not complete successfully: "
+                                "%(reason)s",
                                 {"action": action,
                                  "net_id": net_id,
                                  'reason': e})
@@ -157,6 +157,7 @@ class DhcpRpcCallback(object):
             segment_ext.SegmentPluginBase.get_plugin_type())
         seg_subnets = [subnet for subnet in subnets
                        if subnet.get('segment_id')]
+        nonlocal_subnets = []
         if seg_plug and seg_subnets:
             host_segment_ids = seg_plug.get_segments_by_hosts(context, [host])
             # Gather the ids of all the subnets that are on a segment that
@@ -170,14 +171,19 @@ class DhcpRpcCallback(object):
             # segments as the host.  Do this only for the networks that are
             # routed because we want non-routed networks to work as
             # before.
+            nonlocal_subnets = [subnet for subnet in seg_subnets
+                                if subnet['id'] not in seg_subnet_ids]
             subnets = [subnet for subnet in subnets
                        if subnet['network_id'] not in routed_net_ids or
                        subnet['id'] in seg_subnet_ids]
 
         grouped_subnets = self._group_by_network_id(subnets)
+        grouped_nonlocal_subnets = self._group_by_network_id(nonlocal_subnets)
         grouped_ports = self._group_by_network_id(ports)
         for network in networks:
             network['subnets'] = grouped_subnets.get(network['id'], [])
+            network['non_local_subnets'] = (
+                grouped_nonlocal_subnets.get(network['id'], []))
             network['ports'] = grouped_ports.get(network['id'], [])
 
         return networks
@@ -200,6 +206,7 @@ class DhcpRpcCallback(object):
         subnets = plugin.get_subnets(context, filters=filters)
         seg_plug = directory.get_plugin(
             segment_ext.SegmentPluginBase.get_plugin_type())
+        nonlocal_subnets = []
         if seg_plug and subnets:
             seg_subnets = [subnet for subnet in subnets
                            if subnet.get('segment_id')]
@@ -212,12 +219,16 @@ class DhcpRpcCallback(object):
                 # host is not mapped to any segments and this is a routed
                 # network, then this host shouldn't have even been scheduled
                 # to.
+                nonlocal_subnets = [subnet for subnet in seg_subnets
+                                    if subnet['segment_id'] not in segment_ids]
                 subnets = [subnet for subnet in seg_subnets
                            if subnet['segment_id'] in segment_ids]
         # NOTE(kevinbenton): we sort these because the agent builds tags
         # based on position in the list and has to restart the process if
         # the order changes.
         network['subnets'] = sorted(subnets, key=operator.itemgetter('id'))
+        network['non_local_subnets'] = sorted(nonlocal_subnets,
+                                              key=operator.itemgetter('id'))
         network['ports'] = plugin.get_ports(context, filters=filters)
         return network
 
@@ -270,7 +281,7 @@ class DhcpRpcCallback(object):
         plugin = directory.get_plugin()
         try:
             old_port = plugin.get_port(context, port['id'])
-            if (old_port['device_id'] != n_const.DEVICE_ID_RESERVED_DHCP_PORT
+            if (old_port['device_id'] != constants.DEVICE_ID_RESERVED_DHCP_PORT
                 and old_port['device_id'] !=
                 utils.get_dhcp_agent_device_id(port['port']['network_id'],
                                                host)):
