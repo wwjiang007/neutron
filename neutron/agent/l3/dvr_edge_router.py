@@ -20,7 +20,6 @@ from neutron.agent.l3 import dvr_snat_ns
 from neutron.agent.l3 import router_info as router
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
-from neutron.common import constants as n_const
 
 LOG = logging.getLogger(__name__)
 
@@ -195,8 +194,11 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
         with self.snat_iptables_manager.defer_apply():
             self._empty_snat_chains(self.snat_iptables_manager)
 
-            # NOTE: DVR adds the jump to float snat via super class,
-            # but that is in the router namespace and not snat.
+            # NOTE: float-snat should be added for the
+            # centralized floating-ips supported by the
+            # snat namespace.
+            self.snat_iptables_manager.ipv4['nat'].add_rule(
+                'snat', '-j $float-snat')
 
             self._add_snat_rules(ex_gw_port, self.snat_iptables_manager,
                                  interface_name)
@@ -335,7 +337,7 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
                  (fixed_ip, floating_ip))]
 
     def _set_floating_ip_nat_rules_for_centralized_floatingip(self, fip):
-        if fip.get(n_const.DVR_SNAT_BOUND):
+        if fip.get(lib_constants.DVR_SNAT_BOUND):
             fixed = fip['fixed_ip_address']
             fip_ip = fip['floating_ip_address']
             for chain, rule in self._centralized_floating_forward_rules(

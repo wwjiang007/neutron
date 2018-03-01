@@ -22,11 +22,9 @@ from oslo_log import log as logging
 import oslo_messaging
 
 from neutron.agent.common import utils as agent_utils
-from neutron.common import constants as l_consts
 from neutron.common import utils as n_utils
 from neutron.conf.db import l3_agentschedulers_db
 from neutron.db import agentschedulers_db
-from neutron.db.models import agent as agent_model
 from neutron.db.models import l3agent as rb_model
 from neutron.extensions import l3agentscheduler
 from neutron.extensions import router_availability_zone as router_az
@@ -96,7 +94,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         agent_mode = self._get_agent_mode(agent)
 
         if agent_mode in [constants.L3_AGENT_MODE_DVR,
-                          l_consts.L3_AGENT_MODE_DVR_NO_EXTERNAL]:
+                          constants.L3_AGENT_MODE_DVR_NO_EXTERNAL]:
             raise l3agentscheduler.DVRL3CannotAssignToDvrAgent()
 
         if (agent_mode == constants.L3_AGENT_MODE_LEGACY and
@@ -183,7 +181,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         agent = self._get_agent(context, agent_id)
         agent_mode = self._get_agent_mode(agent)
         if agent_mode in [constants.L3_AGENT_MODE_DVR,
-                          l_consts.L3_AGENT_MODE_DVR_NO_EXTERNAL]:
+                          constants.L3_AGENT_MODE_DVR_NO_EXTERNAL]:
             raise l3agentscheduler.DVRL3CannotRemoveFromDvrAgent()
 
         self._unbind_router(context, router_id, agent_id)
@@ -379,7 +377,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         config_filters = []
         if filters:
             for key, value in filters.items():
-                column = getattr(agent_model.Agent, key, None)
+                column = ag_obj.Agent.fields.get(key, None)
                 if column:
                     if not value:
                         return []
@@ -421,7 +419,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
             agent_mode = agent_conf.get(constants.L3_AGENT_MODE,
                                         constants.L3_AGENT_MODE_LEGACY)
             if (agent_mode == constants.L3_AGENT_MODE_DVR or
-                agent_mode == l_consts.L3_AGENT_MODE_DVR_NO_EXTERNAL or
+                agent_mode == constants.L3_AGENT_MODE_DVR_NO_EXTERNAL or
                     (agent_mode == constants.L3_AGENT_MODE_LEGACY and
                      is_router_distributed)):
                 continue
@@ -445,10 +443,9 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
             candidates.append(l3_agent)
         return candidates
 
-    def auto_schedule_routers(self, context, host, router_ids=None):
+    def auto_schedule_routers(self, context, host):
         if self.router_scheduler:
-            self.router_scheduler.auto_schedule_routers(
-                self, context, host, router_ids)
+            self.router_scheduler.auto_schedule_routers(self, context, host)
 
     def schedule_router(self, context, router, candidates=None):
         if self.router_scheduler:

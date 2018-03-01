@@ -50,6 +50,16 @@ class NetworkQosBindingNotFound(e.NotFound):
                 "could not be found.")
 
 
+class FloatingIPQosBindingNotFound(e.NotFound):
+    message = _("QoS binding for floating IP %(fip_id)s and policy "
+                "%(policy_id)s could not be found.")
+
+
+class FloatingIPQosBindingError(e.NeutronException):
+    message = _("QoS binding for floating IP %(fip_id)s and policy "
+                "%(policy_id)s could not be created: %(db_error)s.")
+
+
 class NetworkQosBindingError(e.NeutronException):
     message = _("QoS binding for network %(net_id)s and policy %(policy_id)s "
                 "could not be created: %(db_error)s.")
@@ -182,6 +192,12 @@ class QoSRuleParameterConflict(e.Conflict):
                 "policy %(policy_id)s as the existing rule of type "
                 "%(existing_rule)s restricts the bandwidth to "
                 "%(existing_value)s.")
+
+
+class QoSRulesConflict(e.Conflict):
+    message = _("Rule %(new_rule_type)s conflicts with "
+                "rule %(rule_id)s which already exists in "
+                "QoS Policy %(policy_id)s.")
 
 
 class ExtensionsNotFound(e.NotFound):

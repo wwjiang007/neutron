@@ -14,6 +14,7 @@
 #    under the License.
 
 import collections
+import copy
 
 import netaddr
 from neutron_lib import constants as lib_const
@@ -55,6 +56,8 @@ def create_reg_numbers(flow_params):
     """Replace reg_(port|net) values with defined register numbers"""
     _replace_register(flow_params, ovsfw_consts.REG_PORT, 'reg_port')
     _replace_register(flow_params, ovsfw_consts.REG_NET, 'reg_net')
+    _replace_register(
+        flow_params, ovsfw_consts.REG_REMOTE_GROUP, 'reg_remote_group')
 
 
 def get_tag_from_other_config(bridge, port_name):
@@ -89,7 +92,7 @@ class SecurityGroup(object):
         """
         self.raw_rules = []
         self.remote_rules = []
-        for rule in rules:
+        for rule in copy.deepcopy(rules):
             protocol = rule.get('protocol')
             if protocol is not None:
                 if protocol.isdigit():
@@ -207,7 +210,12 @@ class SGPortMap(object):
 
 
 class ConjIdMap(object):
-    """Handle conjuction ID allocations and deallocations."""
+    """Handle conjunction ID allocations and deallocations."""
+
+    def __new__(cls):
+        if not hasattr(cls, '_instance'):
+            cls._instance = super(ConjIdMap, cls).__new__(cls)
+        return cls._instance
 
     def __init__(self):
         self.id_map = collections.defaultdict(self._conj_id_factory)
@@ -218,17 +226,18 @@ class ConjIdMap(object):
         # If there is any freed ID, use one.
         if self.id_free:
             return self.id_free.popleft()
-        # Allocate new one.  It must be an even number.
-        self.max_id += 2
+        # Allocate new one. It must be divisible by 8. (See the next function.)
+        self.max_id += 8
         return self.max_id
 
     def get_conj_id(self, sg_id, remote_sg_id, direction, ethertype):
         """Return a conjunction ID specified by the arguments.
-        Allocate one if necessary.  The returned ID is always an even
-        number, allowing the caller to use 2 IDs for each combination.
+        Allocate one if necessary.  The returned ID is divisible by 8,
+        as there are 4 priority levels (see rules.flow_priority_offset)
+        and 2 conjunction IDs are needed per priority.
         """
-        if direction not in [firewall.EGRESS_DIRECTION,
-                             firewall.INGRESS_DIRECTION]:
+        if direction not in [lib_const.EGRESS_DIRECTION,
+                             lib_const.INGRESS_DIRECTION]:
             raise ValueError("Invalid direction '%s'" % direction)
         if ethertype not in [lib_const.IPv4, lib_const.IPv6]:
             raise ValueError("Invalid ethertype '%s'" % ethertype)
@@ -317,7 +326,8 @@ class ConjIPFlowManager(object):
                 addr_to_conj)
             self.flow_state[vlan_tag][(direction, ethertype)] = addr_to_conj
 
-    def add(self, vlan_tag, sg_id, remote_sg_id, direction, ethertype):
+    def add(self, vlan_tag, sg_id, remote_sg_id, direction, ethertype,
+            priority_offset):
         """Get conj_id specified by the arguments
         and notify the manager that
         (remote_sg_id, direction, ethertype, conj_id) flows need to be
@@ -327,7 +337,7 @@ class ConjIPFlowManager(object):
 
         """
         conj_id = self.conj_id_map.get_conj_id(
-            sg_id, remote_sg_id, direction, ethertype)
+            sg_id, remote_sg_id, direction, ethertype) + priority_offset * 2
 
         if (direction, ethertype) not in self.conj_ids[vlan_tag]:
             self.conj_ids[vlan_tag][(direction, ethertype)] = (
@@ -385,6 +395,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
         self.sg_to_delete = set()
         self._deferred = False
         self._drop_all_unmatched_flows()
+        self._initialize_third_party_tables()
         self.conj_ip_manager = ConjIPFlowManager(self)
 
         self.iptables_helper = iptables.Helper(self.int_br.br)
@@ -436,6 +447,16 @@ class OVSFirewallDriver(firewall.FirewallDriver):
         for table in ovs_consts.OVS_FIREWALL_TABLES:
             self.int_br.br.add_flow(table=table, priority=0, actions='drop')
 
+    def _initialize_third_party_tables(self):
+        self.int_br.br.add_flow(
+            table=ovs_consts.ACCEPTED_EGRESS_TRAFFIC_TABLE,
+            priority=1,
+            actions='normal')
+        for table in (ovs_consts.ACCEPTED_INGRESS_TRAFFIC_TABLE,
+                      ovs_consts.DROPPED_TRAFFIC_TABLE):
+            self.int_br.br.add_flow(
+                table=table, priority=0, actions='drop')
+
     def get_ovs_port(self, port_id):
         ovs_port = self.int_br.br.get_vif_port_by_id(port_id)
         if not ovs_port:
@@ -478,18 +499,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
         if not firewall.port_sec_enabled(port):
             self._initialize_egress_no_port_security(port['device'])
             return
-        old_of_port = self.get_ofport(port)
-        # Make sure delete old allowed_address_pair MACs because
-        # allowed_address_pair MACs will be updated in
-        # self.get_or_create_ofport(port)
-        if old_of_port:
-            LOG.error("Initializing port %s that was already "
-                      "initialized.",
-                      port['device'])
-            self.delete_all_port_flows(old_of_port)
-        of_port = self.get_or_create_ofport(port)
-        self.initialize_port_flows(of_port)
-        self.add_flows_from_rules(of_port)
+        self._set_port_filters(port, old_port_expected=False)
 
     def update_port_filter(self, port):
         """Update rules for given port
@@ -503,13 +513,32 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             self._initialize_egress_no_port_security(port['device'])
             return
         elif not self.is_port_managed(port):
-            self._remove_egress_no_port_security(port['device'])
-            self.prepare_port_filter(port)
-            return
+            try:
+                self._remove_egress_no_port_security(port['device'])
+            except exceptions.OVSFWPortNotHandled as e:
+                LOG.debug(e)
+            else:
+                self.prepare_port_filter(port)
+                return
+        try:
+            self._set_port_filters(port, old_port_expected=True)
+        except exceptions.OVSFWPortNotFound as not_found_error:
+            LOG.info("port %(port_id)s does not exist in ovsdb: %(err)s.",
+                     {'port_id': port['device'],
+                      'err': not_found_error})
+
+    def _set_port_filters(self, port, old_port_expected):
         old_of_port = self.get_ofport(port)
-        of_port = self.get_or_create_ofport(port)
+        # Make sure delete old allowed_address_pair MACs because
+        # allowed_address_pair MACs will be updated in
+        # self.get_or_create_ofport(port)
+        if old_of_port:
+            if not old_port_expected:
+                LOG.info("Initializing port %s that was already "
+                         "initialized.", port['device'])
+            self.delete_all_port_flows(old_of_port)
         # TODO(jlibosva): Handle firewall blink
-        self.delete_all_port_flows(old_of_port)
+        of_port = self.get_or_create_ofport(port)
         self.initialize_port_flows(of_port)
         self.add_flows_from_rules(of_port)
 
@@ -566,7 +595,10 @@ class OVSFirewallDriver(firewall.FirewallDriver):
 
     def remove_trusted_ports(self, port_ids):
         for port_id in port_ids:
-            self._remove_egress_no_port_security(port_id)
+            try:
+                self._remove_egress_no_port_security(port_id)
+            except exceptions.OVSFWPortNotHandled as e:
+                LOG.debug(e)
 
     def filter_defer_apply_on(self):
         self._deferred = True
@@ -633,7 +665,8 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 dl_type=constants.ETHERTYPE_IPV6,
                 nw_proto=lib_const.PROTO_NUM_IPV6_ICMP,
                 icmp_type=icmp_type,
-                actions='normal'
+                actions='resubmit(,%d)' % (
+                    ovs_consts.ACCEPTED_EGRESS_TRAFFIC_TABLE)
             )
 
     def _initialize_egress_no_port_security(self, port_id):
@@ -667,15 +700,17 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             table=ovs_consts.ACCEPT_OR_INGRESS_TABLE,
             priority=80,
             reg_port=ovs_port.ofport,
-            actions='normal'
+            actions='resubmit(,%d)' % (
+                ovs_consts.ACCEPTED_EGRESS_TRAFFIC_TABLE)
+
         )
 
     def _remove_egress_no_port_security(self, port_id):
         try:
             ofport = self.sg_port_map.unfiltered[port_id]
         except KeyError:
-            LOG.debug("Port %s is not handled by the firewall.", port_id)
-            return
+            raise exceptions.OVSFWPortNotHandled(port_id=port_id)
+
         self._delete_flows(
             table=ovs_consts.TRANSIENT_TABLE,
             in_port=ofport
@@ -702,7 +737,8 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 dl_src=mac_addr,
                 dl_type=constants.ETHERTYPE_ARP,
                 arp_spa=ip_addr,
-                actions='normal'
+                actions='resubmit(,%d)' % (
+                    ovs_consts.ACCEPTED_EGRESS_TRAFFIC_TABLE)
             )
             self._add_flow(
                 table=ovs_consts.BASE_EGRESS_TABLE,
@@ -765,7 +801,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 nw_proto=lib_const.PROTO_NUM_UDP,
                 tp_src=src_port,
                 tp_dst=dst_port,
-                actions='drop'
+                actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
             )
 
         # Drop Router Advertisements from instances
@@ -777,7 +813,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             dl_type=constants.ETHERTYPE_IPV6,
             nw_proto=lib_const.PROTO_NUM_IPV6_ICMP,
             icmp_type=lib_const.ICMPV6_TYPE_RA,
-            actions='drop'
+            actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
         )
 
         # Drop all remaining not tracked egress connections
@@ -787,7 +823,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             ct_state=ovsfw_consts.OF_STATE_NOT_TRACKED,
             in_port=port.ofport,
             reg_port=port.ofport,
-            actions='drop'
+            actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
         )
 
         # Fill in accept_or_ingress table by checking that traffic is ingress
@@ -810,14 +846,17 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 dl_type=ethertype,
                 reg_port=port.ofport,
                 ct_state=ovsfw_consts.OF_STATE_NEW_NOT_ESTABLISHED,
-                actions='ct(commit,zone=NXM_NX_REG{:d}[0..15]),normal'.format(
-                    ovsfw_consts.REG_NET)
+                actions='ct(commit,zone=NXM_NX_REG{:d}[0..15]),'
+                        'resubmit(,{:d})'.format(
+                            ovsfw_consts.REG_NET,
+                            ovs_consts.ACCEPTED_EGRESS_TRAFFIC_TABLE)
             )
         self._add_flow(
             table=ovs_consts.ACCEPT_OR_INGRESS_TABLE,
             priority=80,
             reg_port=port.ofport,
-            actions='normal'
+            actions='resubmit(,%d)' % (
+                ovs_consts.ACCEPTED_EGRESS_TRAFFIC_TABLE)
         )
 
     def _initialize_tracked_egress(self, port):
@@ -826,7 +865,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             table=ovs_consts.RULES_EGRESS_TABLE,
             priority=50,
             ct_state=ovsfw_consts.OF_STATE_INVALID,
-            actions='drop'
+            actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
         )
         # Drop traffic for removed sg rules
         self._add_flow(
@@ -834,7 +873,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             priority=50,
             reg_port=port.ofport,
             ct_mark=ovsfw_consts.CT_MARK_INVALID,
-            actions='drop'
+            actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
         )
 
         for state in (
@@ -848,14 +887,15 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 ct_mark=ovsfw_consts.CT_MARK_NORMAL,
                 reg_port=port.ofport,
                 ct_zone=port.vlan_tag,
-                actions='normal'
+                actions='resubmit(,%d)' % (
+                    ovs_consts.ACCEPTED_EGRESS_TRAFFIC_TABLE)
             )
         self._add_flow(
             table=ovs_consts.RULES_EGRESS_TABLE,
             priority=40,
             reg_port=port.ofport,
             ct_state=ovsfw_consts.OF_STATE_NOT_ESTABLISHED,
-            actions='drop'
+            actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
         )
         for ethertype in [constants.ETHERTYPE_IP, constants.ETHERTYPE_IPV6]:
             self._add_flow(
@@ -879,7 +919,9 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 dl_type=constants.ETHERTYPE_IPV6,
                 nw_proto=lib_const.PROTO_NUM_IPV6_ICMP,
                 icmp_type=icmp_type,
-                actions='output:{:d}'.format(port.ofport),
+                actions='output:{:d},resubmit(,{:d})'.format(
+                    port.ofport,
+                    ovs_consts.ACCEPTED_INGRESS_TRAFFIC_TABLE),
             )
 
     def _initialize_ingress(self, port):
@@ -889,7 +931,9 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             priority=100,
             dl_type=constants.ETHERTYPE_ARP,
             reg_port=port.ofport,
-            actions='output:{:d}'.format(port.ofport),
+            actions='output:{:d},resubmit(,{:d})'.format(
+                port.ofport,
+                ovs_consts.ACCEPTED_INGRESS_TRAFFIC_TABLE),
         )
         self._initialize_ingress_ipv6_icmp(port)
 
@@ -905,7 +949,9 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 nw_proto=lib_const.PROTO_NUM_UDP,
                 tp_src=src_port,
                 tp_dst=dst_port,
-                actions='output:{:d}'.format(port.ofport),
+                actions='output:{:d},resubmit(,{:d})'.format(
+                    port.ofport,
+                    ovs_consts.ACCEPTED_INGRESS_TRAFFIC_TABLE),
             )
 
         # Track untracked
@@ -934,7 +980,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             table=ovs_consts.RULES_INGRESS_TABLE,
             priority=50,
             ct_state=ovsfw_consts.OF_STATE_INVALID,
-            actions='drop'
+            actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
         )
         # Drop traffic for removed sg rules
         self._add_flow(
@@ -942,7 +988,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             priority=50,
             reg_port=port.ofport,
             ct_mark=ovsfw_consts.CT_MARK_INVALID,
-            actions='drop'
+            actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
         )
 
         # Allow established and related connections
@@ -955,14 +1001,16 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 ct_state=state,
                 ct_mark=ovsfw_consts.CT_MARK_NORMAL,
                 ct_zone=port.vlan_tag,
-                actions='output:{:d}'.format(port.ofport)
+                actions='output:{:d},resubmit(,{:d})'.format(
+                    port.ofport,
+                    ovs_consts.ACCEPTED_INGRESS_TRAFFIC_TABLE)
             )
         self._add_flow(
             table=ovs_consts.RULES_INGRESS_TABLE,
             priority=40,
             reg_port=port.ofport,
             ct_state=ovsfw_consts.OF_STATE_NOT_ESTABLISHED,
-            actions='drop'
+            actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
         )
         for ethertype in [constants.ETHERTYPE_IP, constants.ETHERTYPE_IPV6]:
             self._add_flow(
@@ -990,10 +1038,12 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             direction = rule['direction']
             ethertype = rule['ethertype']
             protocol = rule.get('protocol')
+            priority_offset = rules.flow_priority_offset(rule)
 
             conj_id = self.conj_ip_manager.add(port.vlan_tag, sec_group_id,
                                                rule['remote_group_id'],
-                                               direction, ethertype)
+                                               direction, ethertype,
+                                               priority_offset)
 
             rule1 = rule.copy()
             del rule1['remote_group_id']
@@ -1014,15 +1064,21 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 rule_conj_list = rules.merge_common_rules(rule_conj_list)
 
             for rule, conj_ids in rule_conj_list:
-                flows = rules.create_flows_from_rule_and_port(rule, port)
+                flows = rules.create_flows_from_rule_and_port(
+                    rule, port, conjunction=True)
                 for flow in rules.substitute_conjunction_actions(
                         flows, 2, conj_ids):
                     self._add_flow(**flow)
 
-            # Install actions=accept flows.
+            # Install accept flows and store conj_id to reg7 for future process
             for conj_id in all_conj_ids:
                 for flow in rules.create_conj_flows(
                         port, conj_id, direction, ethertype):
+                    flow['actions'] = "set_field:{:d}->reg{:d},{:s}".format(
+                        flow['conj_id'],
+                        ovsfw_consts.REG_REMOTE_GROUP,
+                        flow['actions']
+                    )
                     self._add_flow(**flow)
 
     def add_flows_from_rules(self, port):
@@ -1031,6 +1087,9 @@ class OVSFirewallDriver(firewall.FirewallDriver):
         LOG.debug('Creating flow rules for port %s that is port %d in OVS',
                   port.id, port.ofport)
         for rule in self._create_rules_generator_for_port(port):
+            # NOTE(toshii): A better version of merge_common_rules and
+            # its friend should be applied here in order to avoid
+            # overlapping flows.
             flows = rules.create_flows_from_rule_and_port(rule, port)
             LOG.debug("RULGEN: Rules generated for flow %s are %s",
                       rule, flows)

@@ -31,7 +31,6 @@ import time
 import uuid
 import weakref
 
-from debtcollector import removals
 import eventlet
 from eventlet.green import subprocess
 import netaddr
@@ -41,7 +40,6 @@ from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from oslo_utils import excutils
-from oslo_utils import fileutils
 import six
 
 import neutron
@@ -103,13 +101,6 @@ def throttler(threshold=DEFAULT_THROTTLER_VALUE):
                 return f(*args, **kwargs)
         return wrapper
     return decorator
-
-
-@removals.remove(
-    message="Use ensure_tree(path, 0o755) from oslo_utils.fileutils")
-def ensure_dir(dir_path):
-    """Ensure a directory with 755 permissions mode."""
-    fileutils.ensure_tree(dir_path, mode=0o755)
 
 
 def _subprocess_setup():
@@ -213,6 +204,15 @@ def is_dvr_serviced(device_owner):
             device_owner in get_other_dvr_serviced_device_owners())
 
 
+def is_fip_serviced(device_owner):
+    """Check if the port can be assigned a floating IP
+
+    Helper function to check the device owner of a
+    port can be assigned a floating IP.
+    """
+    return device_owner != n_const.DEVICE_OWNER_DHCP
+
+
 def ip_to_cidr(ip, prefix=None):
     """Convert an ip with no prefix to cidr notation
 
@@ -225,6 +225,15 @@ def ip_to_cidr(ip, prefix=None):
         # Can't pass ip and prefix separately.  Must concatenate strings.
         net = netaddr.IPNetwork(str(net.ip) + '/' + str(prefix))
     return str(net)
+
+
+def cidr_to_ip(ip_cidr):
+    """Strip the cidr notation from an ip cidr or ip
+
+    :param ip_cidr: An ipv4 or ipv6 address, with or without cidr notation
+    """
+    net = netaddr.IPNetwork(ip_cidr)
+    return str(net.ip)
 
 
 def fixed_ip_cidrs(fixed_ips):
@@ -792,3 +801,12 @@ def resolve_ref(ref):
     if isinstance(ref, weakref.ref):
         ref = ref()
     return ref
+
+
+def bytes_to_bits(value):
+    return value * 8
+
+
+def bits_to_kilobits(value, base):
+    #NOTE(slaweq): round up that even 1 bit will give 1 kbit as a result
+    return int((value + (base - 1)) / base)

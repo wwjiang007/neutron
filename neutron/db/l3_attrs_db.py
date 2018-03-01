@@ -12,13 +12,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.api.validators import availability_zone as az_validator
 from oslo_config import cfg
 
 from neutron._i18n import _
 from neutron.db import _resource_extend as resource_extend
 from neutron.db.models import l3_attrs
-from neutron.extensions import l3
 
 
 def get_attr_info():
@@ -38,7 +38,7 @@ class ExtraAttributesMixin(object):
     """Mixin class to enable router's extra attributes."""
 
     @staticmethod
-    @resource_extend.extends([l3.ROUTERS])
+    @resource_extend.extends([l3_apidef.ROUTERS])
     def _extend_extra_router_dict(router_res, router_db):
         extra_attrs = router_db['extra_attributes'] or {}
         for name, info in get_attr_info().items():
@@ -54,13 +54,16 @@ class ExtraAttributesMixin(object):
             router_db['extra_attributes'] = new
 
     def set_extra_attr_value(self, context, router_db, key, value):
+        if not context.session.is_active:
+            raise RuntimeError(_("set_extra_attr_value cannot be called "
+                                 "out of a transaction."))
+
         # set a single value explicitly
-        with context.session.begin(subtransactions=True):
-            if key in get_attr_info():
-                info = get_attr_info()[key]
-                to_db = info.get('transform_to_db', lambda x: x)
-                self._ensure_extra_attr_model(context, router_db)
-                router_db['extra_attributes'].update({key: to_db(value)})
-                return
-            raise RuntimeError(_("Tried to set a key '%s' that doesn't exist "
-                                 "in the extra attributes table.") % key)
+        if key in get_attr_info():
+            info = get_attr_info()[key]
+            to_db = info.get('transform_to_db', lambda x: x)
+            self._ensure_extra_attr_model(context, router_db)
+            router_db['extra_attributes'].update({key: to_db(value)})
+            return
+        raise RuntimeError(_("Tried to set a key '%s' that doesn't exist "
+                             "in the extra attributes table.") % key)

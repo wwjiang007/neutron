@@ -4,6 +4,12 @@
 Load Balancer as a Service (LBaaS)
 ==================================
 
+.. warning::
+   Neutron-lbaas is deprecated as of Queens. Load-Balancer-as-a-Service
+   (LBaaS v2) is now provided by the `Octavia project
+   <https://docs.openstack.org/octavia/latest/>`_. Please see the FAQ:
+   https://wiki.openstack.org/wiki/Neutron/LBaaS/Deprecation
+
 The Networking service offers a load balancer feature called "LBaaS v2"
 through the ``neutron-lbaas`` service plug-in.
 
@@ -19,14 +25,6 @@ Another LBaaS v2 implementation, `Octavia
 separate worker processes that build load balancers within virtual machines on
 hypervisors that are managed by the Compute service. You do not need an agent
 for Octavia.
-
-.. note::
-
-   LBaaS v1 was removed in the Newton release. These links provide more
-   details about how LBaaS v1 works and how to configure it:
-
-   * `Load-Balancer-as-a-Service (LBaaS) overview <https://docs.openstack.org/admin-guide/networking-introduction.html#load-balancer-as-a-service-lbaas-overview>`__
-   * `Basic Load-Balancer-as-a-Service operations <https://docs.openstack.org/admin-guide/networking-adv-features.html#basic-load-balancer-as-a-service-operations>`__
 
 .. warning::
 

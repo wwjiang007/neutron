@@ -17,6 +17,7 @@ import functools
 
 import fixtures
 import mock
+import netaddr
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib.api.definitions import external_net as extnet_apidef
 from neutron_lib.api.definitions import portbindings
@@ -43,6 +44,7 @@ from neutron.db import agents_db
 from neutron.db import api as db_api
 from neutron.db import models_v2
 from neutron.db import provisioning_blocks
+from neutron.db import securitygroups_db as sg_db
 from neutron.db import segments_db
 from neutron.extensions import multiprovidernet as mpnet
 from neutron.objects import base as base_obj
@@ -675,7 +677,7 @@ class TestMl2DbOperationBoundsTenantRbac(TestMl2DbOperationBoundsTenant):
         net = self.driver.create_network(
             context.get_admin_context(),
             {'network': {'name': 'net1',
-                         'tenant_id': context_.tenant,
+                         'tenant_id': context_.project_id,
                          'admin_state_up': True,
                          'shared': True}})
         # create port that belongs to another tenant
@@ -902,6 +904,18 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
             port['port']['fixed_ips'][0]['ip_address'] = '10.0.0.3'
             plugin.update_port(ctx, port['port']['id'], port)
             self.assertTrue(sg_member_update.called)
+
+    def test_update_port_name_do_not_notify_sg(self):
+        ctx = context.get_admin_context()
+        plugin = directory.get_plugin()
+        port_name = "port_name"
+        with self.port(name=port_name) as port,\
+            mock.patch.object(
+                plugin.notifier,
+                'security_groups_member_updated') as sg_member_update:
+            port['port']['name'] = 'new_port_name'
+            plugin.update_port(ctx, port['port']['id'], port)
+            self.assertFalse(sg_member_update.called)
 
     def test_update_port_status_with_network(self):
         registry.clear()  # don't care about callback behavior
@@ -1216,6 +1230,106 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
         # make sure that the grenade went off during the commit
         self.assertTrue(listener.except_raised)
 
+    def test_list_ports_filtered_by_fixed_ip_substring(self):
+        # for this test we need to enable overlapping ips
+        cfg.CONF.set_default('allow_overlapping_ips', True)
+        with self.port() as port1, self.port():
+            fixed_ips = port1['port']['fixed_ips'][0]
+            query_params = """
+fixed_ips=ip_address_substr%%3D%s&fixed_ips=subnet_id%%3D%s
+""".strip() % (fixed_ips['ip_address'][:-1],
+               fixed_ips['subnet_id'])
+            self._test_list_resources('port', [port1],
+                                      query_params=query_params)
+            query_params = """
+fixed_ips=ip_address_substr%%3D%s&fixed_ips=subnet_id%%3D%s
+""".strip() % (fixed_ips['ip_address'][1:],
+               fixed_ips['subnet_id'])
+            self._test_list_resources('port', [port1],
+                                      query_params=query_params)
+            query_params = """
+fixed_ips=ip_address_substr%%3D%s&fixed_ips=subnet_id%%3D%s
+""".strip() % ('192.168.',
+               fixed_ips['subnet_id'])
+            self._test_list_resources('port', [],
+                                      query_params=query_params)
+
+    def test_list_ports_filtered_by_fixed_ip_substring_dual_stack(self):
+        with self.subnet() as subnet:
+            # Get a IPv4 and IPv6 address
+            tenant_id = subnet['subnet']['tenant_id']
+            net_id = subnet['subnet']['network_id']
+            res = self._create_subnet(
+                self.fmt,
+                tenant_id=tenant_id,
+                net_id=net_id,
+                cidr='2607:f0d0:1002:51::/124',
+                ip_version=6,
+                gateway_ip=constants.ATTR_NOT_SPECIFIED)
+            subnet2 = self.deserialize(self.fmt, res)
+            kwargs = {"fixed_ips":
+                      [{'subnet_id': subnet['subnet']['id']},
+                       {'subnet_id': subnet2['subnet']['id']}]}
+            res = self._create_port(self.fmt, net_id=net_id, **kwargs)
+            port1 = self.deserialize(self.fmt, res)
+            res = self._create_port(self.fmt, net_id=net_id, **kwargs)
+            port2 = self.deserialize(self.fmt, res)
+            fixed_ips = port1['port']['fixed_ips']
+            self.assertEqual(2, len(fixed_ips))
+            query_params = """
+fixed_ips=ip_address_substr%%3D%s&fixed_ips=ip_address%%3D%s
+""".strip() % (fixed_ips[0]['ip_address'][:-1],
+               fixed_ips[1]['ip_address'])
+            self._test_list_resources('port', [port1],
+                                      query_params=query_params)
+            query_params = """
+fixed_ips=ip_address_substr%%3D%s&fixed_ips=ip_address%%3D%s
+""".strip() % ('192.168.',
+               fixed_ips[1]['ip_address'])
+            self._test_list_resources('port', [],
+                                      query_params=query_params)
+            self._delete('ports', port1['port']['id'])
+            self._delete('ports', port2['port']['id'])
+
+    def test_list_ports_filtered_by_security_groups(self):
+        # for this test we need to enable overlapping ips
+        cfg.CONF.set_default('allow_overlapping_ips', True)
+        ctx = context.get_admin_context()
+        with self.port() as port1, self.port() as port2:
+            query_params = "security_groups=%s" % (
+                           port1['port']['security_groups'][0])
+            ports_data = self._list('ports', query_params=query_params)
+            self.assertEqual(set([port1['port']['id'], port2['port']['id']]),
+                             set([port['id'] for port in ports_data['ports']]))
+            self.assertEqual(2, len(ports_data['ports']))
+            query_params = "security_groups=%s&id=%s" % (
+                           port1['port']['security_groups'][0],
+                           port1['port']['id'])
+            ports_data = self._list('ports', query_params=query_params)
+            self.assertEqual(port1['port']['id'], ports_data['ports'][0]['id'])
+            self.assertEqual(1, len(ports_data['ports']))
+            temp_sg = {'security_group': {'tenant_id': 'some_tenant',
+                                          'name': '', 'description': 's'}}
+            sg_dbMixin = sg_db.SecurityGroupDbMixin()
+            sg = sg_dbMixin.create_security_group(ctx, temp_sg)
+            sg_dbMixin._delete_port_security_group_bindings(
+                ctx, port2['port']['id'])
+            sg_dbMixin._create_port_security_group_binding(
+                ctx, port2['port']['id'], sg['id'])
+            port2['port']['security_groups'][0] = sg['id']
+            query_params = "security_groups=%s&id=%s" % (
+                           port1['port']['security_groups'][0],
+                           port1['port']['id'])
+            ports_data = self._list('ports', query_params=query_params)
+            self.assertEqual(port1['port']['id'], ports_data['ports'][0]['id'])
+            self.assertEqual(1, len(ports_data['ports']))
+            query_params = "security_groups=%s&id=%s" % (
+                           (port2['port']['security_groups'][0],
+                            port2['port']['id']))
+            ports_data = self._list('ports', query_params=query_params)
+            self.assertEqual(port2['port']['id'], ports_data['ports'][0]['id'])
+            self.assertEqual(1, len(ports_data['ports']))
+
 
 class TestMl2PortsV2WithRevisionPlugin(Ml2PluginV2TestCase):
 
@@ -1512,6 +1626,8 @@ class TestMl2DvrPortsV2(TestMl2PortsV2):
         ns_to_delete = {'host': 'myhost', 'agent_id': 'vm_l3_agent',
                         'router_id': 'my_router'}
         router_ids = set()
+        call_count_total = 3
+
         if floating_ip:
             router_ids.add(ns_to_delete['router_id'])
 
@@ -1522,12 +1638,17 @@ class TestMl2DvrPortsV2(TestMl2PortsV2):
                                   return_value=router_ids):
             port_id = port['port']['id']
             self.plugin.delete_port(self.context, port_id)
-            self.assertEqual(2, notify.call_count)
+            self.assertEqual(call_count_total, notify.call_count)
             # needed for a full match in the assertion below
             port['port']['extra_dhcp_opts'] = []
             expected = [mock.call(resources.PORT, events.BEFORE_DELETE,
                                   mock.ANY, context=self.context,
                                   port_id=port['port']['id'], port_check=True),
+                        mock.call(resources.PORT, events.PRECOMMIT_DELETE,
+                                  mock.ANY, network=mock.ANY, bind=mock.ANY,
+                                  port=port['port'], port_db=mock.ANY,
+                                  context=self.context, levels=mock.ANY,
+                                  id=mock.ANY, bindings=mock.ANY),
                         mock.call(resources.PORT, events.AFTER_DELETE,
                                   mock.ANY, context=self.context,
                                   port=port['port'],
@@ -2588,9 +2709,9 @@ class TestML2PluggableIPAM(test_ipam.UseIpamMixin, TestMl2SubnetsV2):
         with mock.patch(driver) as driver_mock:
             request = mock.Mock()
             request.subnet_id = uuidutils.generate_uuid()
-            request.subnet_cidr = cidr
+            request.subnet_cidr = netaddr.IPNetwork(cidr)
             request.allocation_pools = []
-            request.gateway_ip = gateway_ip
+            request.gateway_ip = netaddr.IPAddress(gateway_ip)
             request.tenant_id = uuidutils.generate_uuid()
 
             ipam_subnet = mock.Mock()

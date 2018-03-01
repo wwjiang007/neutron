@@ -17,6 +17,7 @@ from oslo_utils import uuidutils
 
 from neutron.cmd.sanity import checks
 from neutron.common import utils as common_utils
+from neutron.tests import base as tests_base
 from neutron.tests.common import net_helpers
 from neutron.tests.fullstack import base
 from neutron.tests.fullstack.resources import environment
@@ -47,7 +48,7 @@ class BaseSecurityGroupsSameNetworkTest(base.BaseFullStackTestCase):
                 of_interface=self.of_interface,
                 l2_agent_type=self.l2_agent_type,
                 firewall_driver=self.firewall_driver,
-                dhcp_agent=True) for _ in range(2)]
+                dhcp_agent=True) for _ in range(self.num_hosts)]
         env = environment.Environment(
             environment.EnvironmentDescription(
                 network_type=self.network_type),
@@ -78,25 +79,32 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
 
     network_type = 'vxlan'
     scenarios = [
+        # The iptables_hybrid driver lacks isolation between agents and
+        # because of that using only one host is enough
         ('ovs-hybrid', {
             'firewall_driver': 'iptables_hybrid',
             'of_interface': 'native',
-            'l2_agent_type': constants.AGENT_TYPE_OVS}),
+            'l2_agent_type': constants.AGENT_TYPE_OVS,
+            'num_hosts': 1}),
         ('ovs-openflow-cli', {
             'firewall_driver': 'openvswitch',
             'of_interface': 'ovs-ofctl',
-            'l2_agent_type': constants.AGENT_TYPE_OVS}),
+            'l2_agent_type': constants.AGENT_TYPE_OVS,
+            'num_hosts': 2}),
         ('ovs-openflow-native', {
             'firewall_driver': 'openvswitch',
             'of_interface': 'native',
-            'l2_agent_type': constants.AGENT_TYPE_OVS}),
+            'l2_agent_type': constants.AGENT_TYPE_OVS,
+            'num_hosts': 2}),
         ('linuxbridge-iptables', {
             'firewall_driver': 'iptables',
-            'l2_agent_type': constants.AGENT_TYPE_LINUXBRIDGE})]
+            'l2_agent_type': constants.AGENT_TYPE_LINUXBRIDGE,
+            'num_hosts': 2})]
 
     # NOTE(toshii): As a firewall_driver can interfere with others,
     # the recommended way to add test is to expand this method, not
     # adding another.
+    @tests_base.unstable_test("bug 1744402")
     def test_securitygroup(self):
         """Tests if a security group rules are working, by confirming
         that 0. traffic is allowed when port security is disabled,

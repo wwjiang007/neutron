@@ -23,6 +23,7 @@ from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import subnet as subnet_def
+from neutron_lib.api.definitions import vlantransparent as vlan_apidef
 from neutron_lib.api import validators
 from neutron_lib.api.validators import availability_zone as az_validator
 from neutron_lib.callbacks import events
@@ -46,6 +47,7 @@ from oslo_utils import excutils
 from oslo_utils import importutils
 from oslo_utils import uuidutils
 import sqlalchemy
+from sqlalchemy import or_
 from sqlalchemy.orm import exc as sa_exc
 
 from neutron._i18n import _
@@ -153,7 +155,9 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                     "availability_zone",
                                     "network_availability_zone",
                                     "default-subnetpools",
-                                    "subnet-service-types"]
+                                    "subnet-service-types",
+                                    "ip-substring-filtering",
+                                    "port-security-groups-filtering"]
 
     @property
     def supported_extension_aliases(self):
@@ -161,7 +165,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             aliases = self._supported_extension_aliases[:]
             aliases += self.extension_manager.extension_aliases()
             sg_rpc.disable_security_group_extension_by_config(aliases)
-            vlantransparent.disable_extension_by_config(aliases)
+            vlantransparent._disable_extension_by_config(aliases)
             self._aliases = aliases
         return self._aliases
 
@@ -808,7 +812,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
             # Update the transparent vlan if configured
             if utils.is_extension_supported(self, 'vlan-transparent'):
-                vlt = vlantransparent.get_vlan_transparent(net_data)
+                vlt = vlan_apidef.get_vlan_transparent(net_data)
                 net_db['vlan_transparent'] = vlt
                 result['vlan_transparent'] = vlt
 
@@ -1100,8 +1104,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     @registry.receives(resources.SUBNET, [events.PRECOMMIT_DELETE])
     def _subnet_delete_precommit_handler(self, rtype, event, trigger,
                                          context, subnet_id, **kwargs):
-        record = self._get_subnet(context, subnet_id)
-        subnet = self._make_subnet_dict(record, context=context)
+        subnet_obj = self._get_subnet_object(context, subnet_id)
+        subnet = self._make_subnet_dict(subnet_obj, context=context)
         network = self.get_network(context, subnet['network_id'])
         mech_context = driver_context.SubnetContext(self, context,
                                                     subnet, network)
@@ -1404,8 +1408,6 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             LOG.error("mechanism_manager.update_port_postcommit "
                       "failed for port %s", id)
 
-        self.check_and_notify_security_group_member_changed(
-            context, original_port, updated_port)
         need_port_update_notify |= self.is_security_group_member_updated(
             context, original_port, updated_port)
 
@@ -1522,6 +1524,14 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
             network = self.get_network(context, port['network_id'])
             bound_mech_contexts = []
+            kwargs = {
+                'context': context,
+                'id': id,
+                'network': network,
+                'port': port,
+                'port_db': port_db,
+                'bindings': binding,
+            }
             device_owner = port['device_owner']
             if device_owner == const.DEVICE_OWNER_DVR_INTERFACE:
                 bindings = db.get_distributed_port_bindings(context,
@@ -1529,6 +1539,10 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 for bind in bindings:
                     levels = db.get_binding_levels(context, id,
                                                    bind.host)
+                    kwargs['bind'] = bind
+                    kwargs['levels'] = levels
+                    registry.notify(resources.PORT, events.PRECOMMIT_DELETE,
+                                    self, **kwargs)
                     mech_context = driver_context.PortContext(
                         self, context, port, network, bind, levels)
                     self.mechanism_manager.delete_port_precommit(mech_context)
@@ -1536,6 +1550,10 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             else:
                 levels = db.get_binding_levels(context, id,
                                                binding.host)
+                kwargs['bind'] = None
+                kwargs['levels'] = levels
+                registry.notify(resources.PORT, events.PRECOMMIT_DELETE,
+                                self, **kwargs)
                 mech_context = driver_context.PortContext(
                     self, context, port, network, binding, levels)
                 self.mechanism_manager.delete_port_precommit(mech_context)
@@ -1848,6 +1866,30 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             if port:
                 return port.id
         return device
+
+    def _get_ports_query(self, context, filters=None, *args, **kwargs):
+        filters = filters or {}
+        security_groups = filters.pop("security_groups", None)
+        if security_groups:
+            port_bindings = self._get_port_security_group_bindings(
+                context, filters={'security_group_id':
+                                  security_groups})
+            if 'id' in filters:
+                filters['id'] = [entry['port_id'] for
+                                 entry in port_bindings
+                                 if entry['port_id'] in filters['id']]
+            else:
+                filters['id'] = [entry['port_id'] for entry in port_bindings]
+        fixed_ips = filters.get('fixed_ips', {})
+        ip_addresses_s = fixed_ips.get('ip_address_substr')
+        query = super(Ml2Plugin, self)._get_ports_query(context, filters,
+                                                        *args, **kwargs)
+        if ip_addresses_s:
+            substr_filter = or_(*[models_v2.Port.fixed_ips.any(
+                models_v2.IPAllocation.ip_address.like('%%%s%%' % ip))
+                for ip in ip_addresses_s])
+            query = query.filter(substr_filter)
+        return query
 
     def filter_hosts_with_network_access(
             self, context, network_id, candidate_hosts):

@@ -64,7 +64,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         if not self.fip_ns:
             return []
 
-        if fip.get(n_const.DVR_SNAT_BOUND):
+        if fip.get(lib_constants.DVR_SNAT_BOUND):
             return []
 
         fixed_ip = fip['fixed_ip_address']
@@ -105,7 +105,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
     def floating_ip_added_dist(self, fip, fip_cidr):
         """Add floating IP to respective namespace based on agent mode."""
-        if fip.get(n_const.DVR_SNAT_BOUND):
+        if fip.get(lib_constants.DVR_SNAT_BOUND):
             floating_ip_status = self.add_centralized_floatingip(fip, fip_cidr)
             if floating_ip_status == lib_constants.FLOATINGIP_STATUS_ACTIVE:
                 self.centralized_floatingips_set.add(fip_cidr)
@@ -274,9 +274,12 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         # TODO(Carl) Can we eliminate the need to make this RPC while
         # processing a router.
         subnet_ports = self.agent.get_ports_by_subnet(subnet_id)
+        ignored_device_owners = (
+            lib_constants.ROUTER_INTERFACE_OWNERS +
+            tuple(common_utils.get_dvr_allowed_address_pair_device_owners()))
 
         for p in subnet_ports:
-            if p['device_owner'] not in lib_constants.ROUTER_INTERFACE_OWNERS:
+            if p['device_owner'] not in ignored_device_owners:
                 for fixed_ip in p['fixed_ips']:
                     self._update_arp_entry(fixed_ip['ip_address'],
                                            p['mac_address'],
@@ -567,7 +570,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
     def process_external(self):
         if self.agent_conf.agent_mode != (
-            n_const.L3_AGENT_MODE_DVR_NO_EXTERNAL):
+            lib_constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
             ex_gw_port = self.get_ex_gw_port()
             if ex_gw_port:
                 self.create_dvr_external_gateway_on_agent(ex_gw_port)

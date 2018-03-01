@@ -152,7 +152,7 @@ class External_net_db_mixin(object):
         else:
             return nets[0]['id'] if nets else None
 
-    @registry.receives('rbac-policy', [events.BEFORE_CREATE])
+    @registry.receives(resources.RBAC_POLICY, [events.BEFORE_CREATE])
     def _process_ext_policy_create(self, resource, event, trigger, context,
                                    object_type, policy, **kwargs):
         if (object_type != 'network' or
@@ -169,8 +169,25 @@ class External_net_db_mixin(object):
                                     {extnet_apidef.EXTERNAL: True},
                                     allow_all=False)
 
-    @registry.receives('rbac-policy', (events.BEFORE_UPDATE,
-                                       events.BEFORE_DELETE))
+    @registry.receives(resources.RBAC_POLICY, [events.AFTER_DELETE])
+    def _process_ext_policy_delete(self, resource, event, trigger, context,
+                                   object_type, policy, **kwargs):
+        if (object_type != 'network' or
+                policy['action'] != 'access_as_external'):
+            return
+        net_as_external = context.session.query(rbac_db.NetworkRBAC).filter(
+            rbac_db.NetworkRBAC.object_id == policy['object_id'],
+            rbac_db.NetworkRBAC.action == 'access_as_external').count()
+        # If the network still have rbac policies, we should not
+        # update external attribute.
+        if net_as_external:
+            return
+        net = self.get_network(context, policy['object_id'])
+        self._process_l3_update(context, net,
+                                {extnet_apidef.EXTERNAL: False})
+
+    @registry.receives(resources.RBAC_POLICY, (events.BEFORE_UPDATE,
+                                               events.BEFORE_DELETE))
     def _validate_ext_not_in_use_by_tenant(self, resource, event, trigger,
                                            context, object_type, policy,
                                            **kwargs):

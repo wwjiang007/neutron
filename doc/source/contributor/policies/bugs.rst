@@ -1,7 +1,7 @@
 Neutron Bugs
 ============
 
-Neutron (client, core, FwaaS, LBaaS, VPNaaS) maintains all of its bugs in the following
+Neutron (client, core, FwaaS, VPNaaS) maintains all of its bugs in the following
 Launchpad projects:
 
 * `Launchpad Neutron <https://bugs.launchpad.net/neutron>`_
@@ -427,7 +427,13 @@ more will be added over time if needed.
 +-------------------------------+-----------------------------------------+----------------------+
 | rfe_                          | Feature enhancements being screened     | Drivers Team         |
 +-------------------------------+-----------------------------------------+----------------------+
+| rfe-confirmed_                | Confirmed feature enhancements          | Drivers Team         |
++-------------------------------+-----------------------------------------+----------------------+
+| rfe-triaged_                  | Triaged feature enhancements            | Drivers Team         |
++-------------------------------+-----------------------------------------+----------------------+
 | rfe-approved_                 | Approved feature enhancements           | Drivers Team         |
++-------------------------------+-----------------------------------------+----------------------+
+| rfe-postponed_                | Postponed feature enhancements          | Drivers Team         |
 +-------------------------------+-----------------------------------------+----------------------+
 | sg-fw_                        | A bug affecting security groups         | Brian Haley          |
 +-------------------------------+-----------------------------------------+----------------------+
@@ -598,14 +604,6 @@ L3 IPAM DHCP
 * `L3 IPAM DHCP - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=l3-ipam-dhcp>`_
 * `L3 IPAM DHCP - In progress <https://bugs.launchpad.net/neutron/+bugs?field.status%3Alist=INPROGRESS&field.tag=l3-ipam-dhcp>`_
 
-.. _lbaas:
-
-LBAAS
-+++++
-
-* `LBaaS - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=lbaas>`_
-* `LBaaS - In progress <https://bugs.launchpad.net/neutron/+bugs?field.status%3Alist=INPROGRESS&field.tag=lbaas>`_
-
 .. _lib:
 
 Lib
@@ -730,6 +728,20 @@ RFE
 * `RFE - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=rfe>`_
 * `RFE - In progress <https://bugs.launchpad.net/neutron/+bugs?field.status%3Alist=INPROGRESS&field.tag=rfe>`_
 
+.. _rfe-confirmed:
+
+RFE-Confirmed
++++++++++++++
+
+* `RFE-Confirmed - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=rfe-confirmed>`_
+
+.. _rfe-triaged:
+
+RFE-Triaged
++++++++++++
+
+* `RFE-Triaged - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=rfe-triaged>`_
+
 .. _rfe-approved:
 
 RFE-Approved
@@ -737,6 +749,14 @@ RFE-Approved
 
 * `RFE-Approved - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=rfe-approved>`_
 * `RFE-Approved - In progress <https://bugs.launchpad.net/neutron/+bugs?field.status%3Alist=INPROGRESS&field.tag=rfe-approved>`_
+
+.. _rfe-postponed:
+
+RFE-Postponed
++++++++++++++
+
+* `RFE-Postponed - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=rfe-postponed>`_
+* `RFE-Postponed - In progress <https://bugs.launchpad.net/neutron/+bugs?field.status%3Alist=INPROGRESS&field.tag=rfe-postponed>`_
 
 .. _sriov-pci-pt:
 

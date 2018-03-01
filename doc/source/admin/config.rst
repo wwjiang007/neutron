@@ -15,11 +15,13 @@ Configuration
    config-bgp-dynamic-routing
    config-dhcp-ha
    config-dns-int
+   config-dns-int-ext-serv
    config-dns-res
    config-dvr-ha-snat
    config-ipam
    config-ipv6
    config-lbaas
+   config-logging
    config-macvtap
    config-mtu
    config-ovs-dpdk

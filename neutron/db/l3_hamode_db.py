@@ -25,6 +25,7 @@ from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import exceptions as n_exc
+from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.exceptions import l3_ext_ha_mode as l3ha_exc
 from neutron_lib.objects import exceptions as obj_base
 from oslo_config import cfg
@@ -47,7 +48,6 @@ from neutron.db.availability_zone import router as router_az_db
 from neutron.db import l3_dvr_db
 from neutron.db.l3_dvr_db import is_distributed_router
 from neutron.db.models import l3ha as l3ha_model
-from neutron.extensions import l3
 from neutron.objects import base
 from neutron.objects import l3_hamode
 from neutron.objects import router as l3_obj
@@ -258,7 +258,7 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                         'Failed to create HA router agent PortBinding, '
                         'Router %s has already been removed '
                         'by concurrent operation', router_id)
-                    raise l3.RouterNotFound(router_id=router_id)
+                    raise l3_exc.RouterNotFound(router_id=router_id)
 
     def add_ha_port(self, context, router_id, network_id, tenant_id):
         # NOTE(kevinbenton): we have to block any ongoing transactions because
@@ -585,7 +585,7 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
             None)
 
     @log_helpers.log_method_call
-    def _process_sync_ha_data(self, context, routers, host, agent_mode):
+    def _process_sync_ha_data(self, context, routers, host, is_any_dvr_agent):
         routers_dict = dict((router['id'], router) for router in routers)
 
         bindings = self.get_ha_router_port_bindings(context,
@@ -614,12 +614,11 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
 
         self._populate_mtu_and_subnets_for_ports(context, interfaces)
 
-        # If this is a DVR+HA router, but the agent in question is in 'dvr'
-        # or 'dvr_no_external' mode (as opposed to 'dvr_snat'), then we want to
-        # always return it even though it's missing the '_ha_interface' key.
+        # If this is a DVR+HA router, then we want to always return it even
+        # though it's missing the '_ha_interface' key. The agent will have
+        # to figure out what kind of router setup is needed.
         return [r for r in list(routers_dict.values())
-                if (agent_mode == constants.L3_AGENT_MODE_DVR or
-                    agent_mode == n_const.L3_AGENT_MODE_DVR_NO_EXTERNAL or
+                if (is_any_dvr_agent or
                     not r.get('ha') or r.get(constants.HA_INTERFACE_KEY))]
 
     @log_helpers.log_method_call
@@ -629,7 +628,7 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
         dvr_agent_mode = (
             agent_mode in [constants.L3_AGENT_MODE_DVR_SNAT,
                            constants.L3_AGENT_MODE_DVR,
-                           n_const.L3_AGENT_MODE_DVR_NO_EXTERNAL])
+                           constants.L3_AGENT_MODE_DVR_NO_EXTERNAL])
         if (dvr_agent_mode and n_utils.is_extension_supported(
                 self, constants.L3_DISTRIBUTED_EXT_ALIAS)):
             # DVR has to be handled differently
@@ -638,7 +637,8 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
         else:
             sync_data = super(L3_HA_NAT_db_mixin, self).get_sync_data(context,
                                                             router_ids, active)
-        return self._process_sync_ha_data(context, sync_data, host, agent_mode)
+        return self._process_sync_ha_data(
+            context, sync_data, host, dvr_agent_mode)
 
     @classmethod
     def _set_router_states(cls, context, bindings, states):
@@ -671,10 +671,10 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
             if states[port['device_id']] == n_const.HA_ROUTER_STATE_ACTIVE)
 
         for port in active_ports:
-            port[portbindings.HOST_ID] = host
             try:
-                self._core_plugin.update_port(admin_ctx, port['id'],
-                                              {port_def.RESOURCE_NAME: port})
+                self._core_plugin.update_port(
+                    admin_ctx, port['id'],
+                    {port_def.RESOURCE_NAME: {portbindings.HOST_ID: host}})
             except (orm.exc.StaleDataError, orm.exc.ObjectDeletedError,
                     n_exc.PortNotFound):
                 # Take concurrently deleted interfaces in to account

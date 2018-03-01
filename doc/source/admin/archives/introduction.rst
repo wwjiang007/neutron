@@ -108,6 +108,12 @@ Set these options to configure SSL:
 Load-Balancer-as-a-Service (LBaaS) overview
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+.. warning::
+   Neutron-lbaas is deprecated as of Queens. Load-Balancer-as-a-Service
+   (LBaaS v2) is now provided by the `Octavia project
+   <https://docs.openstack.org/octavia/latest/>`_. Please see the FAQ:
+   https://wiki.openstack.org/wiki/Neutron/LBaaS/Deprecation
+
 Load-Balancer-as-a-Service (LBaaS) enables Networking to distribute
 incoming requests evenly among designated instances. This distribution
 ensures that the workload is shared predictably among instances and
@@ -195,7 +201,7 @@ Virtual-Private-Network-as-a-Service (VPNaaS)
 The VPNaaS extension enables OpenStack projects to extend private networks
 across the internet.
 
-VPNaas is a service. It is a parent object that associates a VPN
+VPNaaS is a service. It is a parent object that associates a VPN
 with a specific subnet and router. Only one VPN service object can be
 created for each router and each subnet. However, each VPN service object
 can have any number of IP security connections.

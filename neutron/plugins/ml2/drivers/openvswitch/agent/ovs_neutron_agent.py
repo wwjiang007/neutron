@@ -195,6 +195,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         self.vxlan_udp_port = agent_conf.vxlan_udp_port
         self.dont_fragment = agent_conf.dont_fragment
         self.tunnel_csum = agent_conf.tunnel_csum
+        self.tos = ('inherit'
+                    if agent_conf.dscp_inherit
+                    else (int(agent_conf.dscp) << 2
+                          if agent_conf.dscp
+                          else None))
         self.tun_br = None
         self.patch_int_ofport = constants.OFPORT_INVALID
         self.patch_tun_ofport = constants.OFPORT_INVALID
@@ -291,7 +296,6 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
         # The initialization is complete; we can start receiving messages
         self.connection.consume_in_threads()
-        self.dead_topics.consume_in_threads()
 
         self.quitting_rpc_timeout = agent_conf.quitting_rpc_timeout
 
@@ -383,29 +387,6 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                                      topics.AGENT,
                                                      consumers,
                                                      start_listening=False)
-        self.setup_old_topic_sinkhole()
-
-    def setup_old_topic_sinkhole(self):
-        class SinkHole(object):
-            target = oslo_messaging.Target(version='1.4')
-
-            def __getattr__(self, attr):
-                return self._receiver
-
-            def _receiver(self, *args, **kwargs):
-                pass
-
-        # TODO(kevinbenton): remove this once oslo.messaging solves
-        # bug/1705351 so we can stop subscribing to these old topics
-        old_consumers = [[topics.PORT, topics.UPDATE],
-                         [topics.PORT, topics.DELETE],
-                         [topics.SECURITY_GROUP, topics.UPDATE],
-                         [topics.NETWORK, topics.UPDATE]]
-        self._sinkhole = SinkHole()
-        self.dead_topics = agent_rpc.create_consumers(
-            [self._sinkhole], topics.AGENT, old_consumers,
-            start_listening=False
-        )
 
     def port_update(self, context, **kwargs):
         port = kwargs.get('port')
@@ -1433,6 +1414,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                          "putting on the dead VLAN", vif_port.vif_id)
 
                 self.port_dead(vif_port)
+                self.plugin_rpc.update_device_down(
+                    self.context, port_id, self.agent_id,
+                    self.conf.host)
                 port_needs_binding = False
         else:
             LOG.debug("No VIF port for port %s defined on agent.", port_id)
@@ -1457,7 +1441,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                     tunnel_type,
                                     self.vxlan_udp_port,
                                     self.dont_fragment,
-                                    self.tunnel_csum)
+                                    self.tunnel_csum,
+                                    self.tos)
         if ofport == ovs_lib.INVALID_OFPORT:
             LOG.error("Failed to set-up %(type)s tunnel port to %(ip)s",
                       {'type': tunnel_type, 'ip': remote_ip})
@@ -1529,6 +1514,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 # The port disappeared and cannot be processed
                 LOG.info("Port %s was not found on the integration bridge "
                          "and will therefore not be processed", device)
+                self.ext_manager.delete_port(self.context, {'port_id': device})
                 skipped_devices.append(device)
                 continue
 

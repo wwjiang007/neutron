@@ -630,6 +630,12 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
                tenant_id=None,
                service_types=None,
                set_context=False):
+
+        cidr = netaddr.IPNetwork(cidr) if cidr else None
+        if (gateway_ip is not None and
+                gateway_ip != constants.ATTR_NOT_SPECIFIED):
+            gateway_ip = netaddr.IPAddress(gateway_ip)
+
         with optional_ctx(network, self.network,
                           set_context=set_context,
                           tenant_id=tenant_id) as network_to_use:
@@ -6270,11 +6276,11 @@ class DbModelMixin(object):
         return sg, rule
 
     def _make_floating_ip(self, ctx, port_id):
-        with db_api.context_manager.writer.using(ctx):
-            flip = l3_models.FloatingIP(floating_ip_address='1.2.3.4',
-                                        floating_network_id='somenet',
-                                        floating_port_id=port_id)
-            ctx.session.add(flip)
+        flip = l3_obj.FloatingIP(
+            ctx, floating_ip_address=netaddr.IPAddress('1.2.3.4'),
+            floating_network_id=uuidutils.generate_uuid(),
+            floating_port_id=port_id)
+        flip.create()
         return flip
 
     def _make_router(self, ctx):
@@ -6337,7 +6343,7 @@ class DbModelMixin(object):
         port = self._make_port(ctx, network.id)
         flip = self._make_floating_ip(ctx, port.id)
         self._test_staledata_error_on_concurrent_object_update(
-            l3_models.FloatingIP, flip['id'])
+            flip.db_model, flip.id)
 
     def test_staledata_error_on_concurrent_object_update_sg(self):
         ctx = context.get_admin_context()
@@ -6428,7 +6434,9 @@ class DbModelMixin(object):
         network = self._make_network(ctx)
         port = self._make_port(ctx, network.id)
         flip = self._make_floating_ip(ctx, port.id)
-        self._test_standardattr_removed_on_obj_delete(ctx, flip)
+        # TODO(lujinluo): Change flip.db_obj to flip once all
+        # codes are migrated to use Floating IP OVO object.
+        self._test_standardattr_removed_on_obj_delete(ctx, flip.db_obj)
 
     def test_standardattr_removed_on_router_delete(self):
         ctx = context.get_admin_context()
@@ -6668,7 +6676,7 @@ class DbOperationBoundMixin(object):
 
     def get_api_kwargs(self):
         context_ = self._get_context()
-        return {'set_context': True, 'tenant_id': context_.tenant}
+        return {'set_context': True, 'tenant_id': context_.project_id}
 
     def _list_and_record_queries(self, resource, query_params=None):
         kwargs = {'neutron_context': self._get_context()}

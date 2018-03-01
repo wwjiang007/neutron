@@ -31,6 +31,7 @@ import six
 from neutron._i18n import _
 from neutron.agent.common import utils
 from neutron.common import exceptions as n_exc
+from neutron.common import ipv6_utils
 from neutron.common import utils as common_utils
 from neutron.privileged.agent.linux import ip_lib as privileged
 
@@ -332,6 +333,8 @@ class IPDevice(SubProcessBase):
                           " floatingip %s", ip_str)
 
     def disable_ipv6(self):
+        if not ipv6_utils.is_enabled_and_bind_by_default():
+            return
         sysctl_name = re.sub(r'\.', '/', self.name)
         cmd = ['net.ipv6.conf.%s.disable_ipv6=1' % sysctl_name]
         return sysctl(cmd, namespace=self.namespace)
@@ -594,8 +597,13 @@ class IpAddrCommand(IpDeviceCommandBase):
                             filters=None, ip_version=None):
         """Get a list of all the devices with an IP attached in the namespace.
 
-        @param name: if it's not None, only a device with that matching name
+        :param name: if it's not None, only a device with that matching name
                      will be returned.
+        :param scope: address scope, for example, global, link, or host
+        :param to: IP address or cidr to match. If cidr then it will match
+                   any IP within the specified subnet
+        :param filters: list of any other filters supported by /sbin/ip
+        :param ip_version: 4 or 6
         """
         options = [ip_version] if ip_version else []
 
@@ -937,6 +945,11 @@ def get_device_mac(device_name, namespace=None):
     return IPDevice(device_name, namespace=namespace).link.address
 
 
+def get_device_mtu(device_name, namespace=None):
+    """Return the MTU value of the device."""
+    return IPDevice(device_name, namespace=namespace).link.mtu
+
+
 NetworkNamespaceNotFound = privileged.NetworkNamespaceNotFound
 NetworkInterfaceNotFound = privileged.NetworkInterfaceNotFound
 
@@ -1054,8 +1067,12 @@ def ensure_device_is_ready(device_name, namespace=None):
     dev = IPDevice(device_name, namespace=namespace)
     dev.set_log_fail_as_error(False)
     try:
-        # Ensure the device is up, even if it is already up. If the device
-        # doesn't exist, a RuntimeError will be raised.
+        # Ensure the device has a MAC address and is up, even if it is already
+        # up. If the device doesn't exist, a RuntimeError will be raised.
+        if not dev.link.address:
+            LOG.error("Device %s cannot be used as it has no MAC "
+                      "address", device_name)
+            return False
         dev.link.set_up()
     except RuntimeError:
         return False

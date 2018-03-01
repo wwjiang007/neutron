@@ -51,6 +51,8 @@ from neutron.plugins.ml2.drivers.linuxbridge.agent.common \
     import constants as lconst
 from neutron.plugins.ml2.drivers.linuxbridge.agent.common \
     import utils as lb_utils
+from neutron.plugins.ml2.drivers.linuxbridge.agent import \
+    linuxbridge_agent_extension_api as agent_extension_api
 from neutron.plugins.ml2.drivers.linuxbridge.agent \
     import linuxbridge_capabilities
 
@@ -62,6 +64,13 @@ BRIDGE_NAME_PREFIX = "brq"
 MAX_VLAN_POSTFIX_LEN = 5
 VXLAN_INTERFACE_PREFIX = "vxlan-"
 
+IPTABLES_DRIVERS = [
+    'iptables',
+    'iptables_hybrid',
+    'neutron.agent.linux.iptables_firewall.IptablesFirewallDriver',
+    'neutron.agent.linux.iptables_firewall.OVSHybridIptablesFirewallDriver'
+]
+
 
 class LinuxBridgeManager(amb.CommonAgentManagerBase):
     def __init__(self, bridge_mappings, interface_mappings):
@@ -71,6 +80,7 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
         self.validate_interface_mappings()
         self.validate_bridge_mappings()
         self.ip = ip_lib.IPWrapper()
+        self.agent_api = None
         # VXLAN related parameters:
         self.local_ip = cfg.CONF.VXLAN.local_ip
         self.vxlan_mode = lconst.VXLAN_NONE
@@ -241,13 +251,13 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
             if self.ensure_bridge(bridge_name, interface):
                 return interface
 
-    def ensure_vxlan_bridge(self, network_id, segmentation_id):
+    def ensure_vxlan_bridge(self, network_id, segmentation_id, mtu):
         """Create a vxlan and bridge unless they already exist."""
-        interface = self.ensure_vxlan(segmentation_id)
+        interface = self.ensure_vxlan(segmentation_id, mtu)
         if not interface:
             LOG.error("Failed creating vxlan interface for "
                       "%(segmentation_id)s",
-                      {segmentation_id: segmentation_id})
+                      {'segmentation_id': segmentation_id})
             return
         bridge_name = self.get_bridge_name(network_id)
         self.ensure_bridge(bridge_name, interface, update_interface=False)
@@ -306,7 +316,7 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
             LOG.debug("Done creating subinterface %s", interface)
         return interface
 
-    def ensure_vxlan(self, segmentation_id):
+    def ensure_vxlan(self, segmentation_id, mtu=None):
         """Create a vxlan unless it already exists."""
         interface = self.get_vxlan_device_name(segmentation_id)
         if not ip_lib.device_exists(interface):
@@ -318,16 +328,43 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
                     'srcport': (cfg.CONF.VXLAN.udp_srcport_min,
                                 cfg.CONF.VXLAN.udp_srcport_max),
                     'dstport': cfg.CONF.VXLAN.udp_dstport,
-                    'ttl': cfg.CONF.VXLAN.ttl,
-                    'tos': cfg.CONF.VXLAN.tos}
+                    'ttl': cfg.CONF.VXLAN.ttl}
+            if cfg.CONF.VXLAN.tos:
+                args['tos'] = cfg.CONF.VXLAN.tos
+                if cfg.CONF.AGENT.dscp or cfg.CONF.AGENT.dscp_inherit:
+                    LOG.warning('The deprecated tos option in group VXLAN '
+                                'is set and takes precedence over dscp and '
+                                'dscp_inherit in group AGENT.')
+            elif cfg.CONF.AGENT.dscp_inherit:
+                args['tos'] = 'inherit'
+            elif cfg.CONF.AGENT.dscp:
+                args['tos'] = int(cfg.CONF.AGENT.dscp) << 2
+
             if self.vxlan_mode == lconst.VXLAN_MCAST:
                 args['group'] = self.get_vxlan_group(segmentation_id)
             if cfg.CONF.VXLAN.l2_population:
                 args['proxy'] = cfg.CONF.VXLAN.arp_responder
 
             try:
+                if mtu:
+                    phys_dev_mtu = ip_lib.get_device_mtu(self.local_int)
+                    max_mtu = phys_dev_mtu - constants.VXLAN_ENCAP_OVERHEAD
+                    if mtu > max_mtu:
+                        LOG.error("Provided MTU value %(mtu)s for VNI "
+                                  "%(segmentation_id)s is too high. "
+                                  "According to physical device %(dev)s "
+                                  "MTU=%(phys_mtu)s maximum available "
+                                  "MTU is %(max_mtu)s",
+                                  {'mtu': mtu,
+                                   'segmentation_id': segmentation_id,
+                                   'dev': self.local_int,
+                                   'phys_mtu': phys_dev_mtu,
+                                   'max_mtu': max_mtu})
+                        return None
                 int_vxlan = self.ip.add_vxlan(interface, segmentation_id,
                                               **args)
+                if mtu:
+                    int_vxlan.link.set_mtu(mtu)
             except RuntimeError:
                 with excutils.save_and_reraise_exception() as ctxt:
                     # perform this check after an attempt rather than before
@@ -352,7 +389,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
             for ip in ips:
                 # If bridge ip address already exists, then don't add
                 # otherwise will report error
-                if not dst_device.addr.list(to=ip['cidr']):
+                to = utils.cidr_to_ip(ip['cidr'])
+                if not dst_device.addr.list(to=to):
                     dst_device.addr.add(cidr=ip['cidr'])
 
         if gateway:
@@ -448,13 +486,14 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
     def ensure_physical_in_bridge(self, network_id,
                                   network_type,
                                   physical_network,
-                                  segmentation_id):
+                                  segmentation_id,
+                                  mtu):
         if network_type == constants.TYPE_VXLAN:
             if self.vxlan_mode == lconst.VXLAN_NONE:
                 LOG.error("Unable to add vxlan interface for network %s",
                           network_id)
                 return
-            return self.ensure_vxlan_bridge(network_id, segmentation_id)
+            return self.ensure_vxlan_bridge(network_id, segmentation_id, mtu)
 
         # NOTE(nick-ma-z): Obtain mappings of physical bridge and interfaces
         physical_bridge = self.bridge_mappings.get(physical_network)
@@ -513,7 +552,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
         elif not self.ensure_physical_in_bridge(network_id,
                                                 network_type,
                                                 physical_network,
-                                                segmentation_id):
+                                                segmentation_id,
+                                                mtu):
             return False
         if mtu:  # <-None with device_details from older neutron servers.
             # we ensure the MTU here because libvirt does not set the
@@ -786,6 +826,21 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
 
     def get_rpc_callbacks(self, context, agent, sg_agent):
         return LinuxBridgeRpcCallbacks(context, agent, sg_agent)
+
+    def get_agent_api(self, **kwargs):
+        if self.agent_api:
+            return self.agent_api
+        sg_agent = kwargs.get("sg_agent")
+        iptables_manager = self._get_iptables_manager(sg_agent)
+        self.agent_api = agent_extension_api.LinuxbridgeAgentExtensionAPI(
+            iptables_manager)
+        return self.agent_api
+
+    def _get_iptables_manager(self, sg_agent):
+        if not sg_agent:
+            return None
+        if cfg.CONF.SECURITYGROUP.firewall_driver in IPTABLES_DRIVERS:
+            return sg_agent.firewall.iptables
 
     def get_rpc_consumers(self):
         consumers = [[topics.PORT, topics.UPDATE],

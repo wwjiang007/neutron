@@ -21,6 +21,7 @@ from oslo_log import log
 from oslo_utils import uuidutils
 
 from neutron.agent.l3 import agent as l3_agent
+from neutron.agent.l3 import dvr_edge_ha_router as dvr_edge_ha_rtr
 from neutron.agent.l3 import dvr_edge_router as dvr_edge_rtr
 from neutron.agent.l3 import dvr_local_router as dvr_router
 from neutron.agent.l3 import link_local_allocator as lla
@@ -497,6 +498,17 @@ class TestDvrRouterOperations(base.BaseTestCase):
                        'device_owner': lib_constants.DEVICE_OWNER_DHCP,
                        'fixed_ips': [{'ip_address': '1.2.3.4',
                                       'prefixlen': 24,
+                                      'subnet_id': subnet_id}]},
+                      {'mac_address': '11:22:33:44:55:66',
+                       'device_owner': lib_constants.DEVICE_OWNER_LOADBALANCER,
+                       'fixed_ips': [{'ip_address': '1.2.3.5',
+                                      'prefixlen': 24,
+                                      'subnet_id': subnet_id}]},
+                      {'mac_address': '22:33:44:55:66:77',
+                       'device_owner':
+                           lib_constants.DEVICE_OWNER_LOADBALANCERV2,
+                       'fixed_ips': [{'ip_address': '1.2.3.6',
+                                      'prefixlen': 24,
                                       'subnet_id': subnet_id}]}]
 
         self.plugin_api.get_ports_by_subnet.return_value = test_ports
@@ -777,3 +789,80 @@ class TestDvrRouterOperations(base.BaseTestCase):
         device.exists = mock.Mock(return_value=False)
         with mock.patch.object(ip_lib, 'IPDevice', return_value=device):
             self.assertFalse(ri.get_router_cidrs(device))
+
+    @mock.patch.object(router_info.RouterInfo, '_add_snat_rules')
+    @mock.patch.object(dvr_router.DvrLocalRouter, '_handle_router_snat_rules')
+    def test_handle_snat_rule_for_centralized_fip(
+            self, _add_snat_rules, _handle_router_snat_rules):
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        agent.conf.agent_mode = lib_constants.L3_AGENT_MODE_DVR_SNAT
+        self.mock_driver.unplug.reset_mock()
+
+        router = l3_test_common.prepare_router_data(enable_floating_ip=True)
+        router['gw_port_host'] = HOSTNAME
+        self._set_ri_kwargs(agent, router['id'], router)
+        ri = dvr_edge_rtr.DvrEdgeRouter(HOSTNAME, **self.ri_kwargs)
+        ri.snat_iptables_manager = mock.MagicMock()
+        ipv4_nat = ri.snat_iptables_manager.ipv4['nat']
+        interface_name, ex_gw_port = l3_test_common.prepare_ext_gw_test(self,
+                                                                        ri)
+        ri._handle_router_snat_rules(ex_gw_port, interface_name)
+        ipv4_nat.add_rule.assert_called_once_with('snat', '-j $float-snat')
+
+    @mock.patch.object(dvr_edge_rtr.DvrEdgeRouter,
+                       'add_centralized_floatingip')
+    def test_add_centralized_floatingip(self,
+                                        super_add_centralized_floatingip):
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        agent.conf.agent_mode = lib_constants.L3_AGENT_MODE_DVR_SNAT
+        router = l3_test_common.prepare_router_data(num_internal_ports=2)
+        router['gw_port_host'] = HOSTNAME
+        self.mock_driver.unplug.reset_mock()
+        self._set_ri_kwargs(agent, router['id'], router)
+        fip = {'id': _uuid()}
+        fip_cidr = '11.22.33.44/24'
+
+        ri = dvr_edge_ha_rtr.DvrEdgeHaRouter(HOSTNAME, [], **self.ri_kwargs)
+        ri.is_router_master = mock.Mock(return_value=False)
+        ri._add_vip = mock.Mock()
+        interface_name = ri.get_snat_external_device_interface_name(
+            ri.get_ex_gw_port())
+        ri.add_centralized_floatingip(fip, fip_cidr)
+        ri._add_vip.assert_called_once_with(fip_cidr, interface_name)
+        super_add_centralized_floatingip.assert_not_called()
+
+        ri1 = dvr_edge_ha_rtr.DvrEdgeHaRouter(HOSTNAME, [], **self.ri_kwargs)
+        ri1.is_router_master = mock.Mock(return_value=True)
+        ri1._add_vip = mock.Mock()
+        interface_name = ri1.get_snat_external_device_interface_name(
+            ri1.get_ex_gw_port())
+        ri1.add_centralized_floatingip(fip, fip_cidr)
+        ri1._add_vip.assert_called_once_with(fip_cidr, interface_name)
+        super_add_centralized_floatingip.assert_called_once_with(fip,
+                                                                 fip_cidr)
+
+    @mock.patch.object(dvr_edge_rtr.DvrEdgeRouter,
+                       'remove_centralized_floatingip')
+    def test_remove_centralized_floatingip(self,
+                                super_remove_centralized_floatingip):
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        agent.conf.agent_mode = lib_constants.L3_AGENT_MODE_DVR_SNAT
+        router = l3_test_common.prepare_router_data(num_internal_ports=2)
+        router['gw_port_host'] = HOSTNAME
+        self.mock_driver.unplug.reset_mock()
+        self._set_ri_kwargs(agent, router['id'], router)
+        fip_cidr = '11.22.33.44/24'
+
+        ri = dvr_edge_ha_rtr.DvrEdgeHaRouter(HOSTNAME, [], **self.ri_kwargs)
+        ri.is_router_master = mock.Mock(return_value=False)
+        ri._remove_vip = mock.Mock()
+        ri.remove_centralized_floatingip(fip_cidr)
+        ri._remove_vip.assert_called_once_with(fip_cidr)
+        super_remove_centralized_floatingip.assert_not_called()
+
+        ri1 = dvr_edge_ha_rtr.DvrEdgeHaRouter(HOSTNAME, [], **self.ri_kwargs)
+        ri1.is_router_master = mock.Mock(return_value=True)
+        ri1._remove_vip = mock.Mock()
+        ri1.remove_centralized_floatingip(fip_cidr)
+        ri1._remove_vip.assert_called_once_with(fip_cidr)
+        super_remove_centralized_floatingip.assert_called_once_with(fip_cidr)
